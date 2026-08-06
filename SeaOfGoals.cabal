@@ -1,0 +1,76 @@
+cabal-version:      3.14
+name:               SeaOfGoals
+version:            0.1.0.0
+-- synopsis:
+-- description:
+license:            GPL-3.0-or-later
+license-file:       LICENSE
+author:             Erchius
+maintainer:         zeyue_jia@u.nus.edu
+-- copyright:
+category:           Agent
+build-type:         Simple
+extra-doc-files:    CHANGELOG.md
+-- extra-source-files:
+
+common warnings
+    ghc-options: -Wall
+    default-extensions:
+        OverloadedStrings
+        ScopedTypeVariables
+
+library
+    import:           warnings
+    exposed-modules:
+        Agent.LLM.Transport
+        Agent.SeaOfGoals.Agentic
+        Agent.SeaOfGoals.LLM
+        Agent.SeaOfGoals.LLM.Backends.GPT
+        Agent.SeaOfGoals.LLM.Backends.Gemini
+        Agent.SeaOfGoals.Talks
+    -- other-modules:
+    -- other-extensions:
+    build-depends:
+        aeson,
+        aeson-qq,
+        base ^>=4.21.0.0,
+        bytestring,
+        case-insensitive,
+        http-client,
+        http-client-tls,
+        http-types,
+        containers,
+        text
+    hs-source-dirs:   lib
+    default-language: GHC2024
+
+executable SeaOfGoals
+    import:           warnings
+    main-is:          Main.hs
+    -- other-modules:
+    -- other-extensions:
+    build-depends:
+        aeson,
+        aeson-qq,
+        base ^>=4.21.0.0,
+        SeaOfGoals,
+        containers,
+        text
+
+    hs-source-dirs:   exe
+    default-language: GHC2024
+
+test-suite SeaOfGoals-test
+    import:           warnings
+    default-language: GHC2024
+    -- other-modules:
+    -- other-extensions:
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Main.hs
+    build-depends:
+        aeson,
+        aeson-qq,
+        base ^>=4.21.0.0,
+        SeaOfGoals,
+        text
