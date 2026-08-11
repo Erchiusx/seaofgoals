@@ -67,7 +67,8 @@ sendJSON transportRequest = do
       pure $
         if responseStatusCode >= 200 && responseStatusCode < 300
           then Right transportResponse
-          else Left (LLMTransportError (Text.pack (transportResponseBody transportResponse)))
+          else
+            Left (LLMTransportError (Text.pack (transportResponseBody transportResponse)))
 
 tryParseRequest :: String -> IO (Either LLMError HTTP.Request)
 tryParseRequest url = do

@@ -14,10 +14,14 @@ import Agent.SeaOfGoals.LLM.Backends.GPT
   ( GPTBackend (..)
   , defaultGPTEndpoint
   )
-import Data.Data (TypeRep)
-import Data.Dynamic (Dynamic)
-import Data.Map (Map)
+import Control.Monad (forM_)
+import Data.Char (toUpper)
+import Data.Dynamic (Dynamic, toDyn)
+import Data.IORef (modifyIORef')
+import Data.Map (Map, empty, insert)
 import Data.Text qualified as Text
+import GHC.IO (unsafePerformIO)
+import GHC.IORef (IORef, newIORef)
 import System.Environment (lookupEnv)
 
 main :: IO ()
@@ -70,5 +74,15 @@ contentPartText (ImagePart _) = "[image]"
 contentPartText (FilePart _) = "[file]"
 contentPartText (AudioPart _) = "[audio]"
 
-globals :: Map String (Dynamic, TypeRep)
-globals = undefined
+{-# NOINLINE globals #-}
+globals :: IORef (Map String Dynamic)
+globals = unsafePerformIO $ newIORef empty
+
+initConfig :: IO ()
+initConfig =
+  forM_ ["Key", "Type", "EndPoint"] $ \arg -> do
+    modifyIORef' globals
+      . insert ("api" <> arg)
+      . toDyn
+      =<< lookupEnv ("SOG_API_" <> map toUpper arg)
+

@@ -3,5 +3,5 @@ where
 
 import Agent.SeaOfGoals.LLM
 
-class History h where
-  compose :: h -> [LLMMessage]
+data HistoryItem
+  = History

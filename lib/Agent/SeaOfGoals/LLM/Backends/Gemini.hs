@@ -10,11 +10,11 @@ import Agent.LLM.Transport
   , sendJSON
   )
 import Agent.SeaOfGoals.LLM
-  ( LLM (..)
-  , ArtifactRef (..)
+  ( ArtifactRef (..)
   , AudioRef (..)
   , FileRef (..)
   , ImageRef (..)
+  , LLM (..)
   , LLMContentPart (..)
   , LLMError (..)
   , LLMInputItem (..)
@@ -133,7 +133,8 @@ toGeminiToolResultContent toolResult =
                [ "functionResponse"
                    .= object
                      [ "name" .= maybe (toolResultCallId toolResult) id (toolResultName toolResult)
-                     , "response" .= object ["content" .= contentPartsText (toolResultContent toolResult)]
+                     , "response"
+                         .= object ["content" .= contentPartsText (toolResultContent toolResult)]
                      ]
                ]
            ]
@@ -197,7 +198,9 @@ fromGeminiResponse request response =
 
 responseItems :: Text -> [ToolCall] -> [LLMInputItem]
 responseItems content toolCalls =
-  [MessageInput LLMMessage{messageRole = Assistant, messageContent = [TextPart content]}]
+  [ MessageInput
+      LLMMessage{messageRole = Assistant, messageContent = [TextPart content]}
+  ]
     <> fmap ToolCallInput toolCalls
 
 data GeminiResponse = GeminiResponse
@@ -346,11 +349,19 @@ contentPartText (AudioPart audioRef) = audioRefText audioRef
 
 artifactRefText :: ArtifactRef -> Text
 artifactRefText artifactRef =
-  "[artifact: " <> maybe (artifactRefUri artifactRef) id (artifactRefName artifactRef) <> " <" <> artifactRefUri artifactRef <> ">]"
+  "[artifact: "
+    <> maybe (artifactRefUri artifactRef) id (artifactRefName artifactRef)
+    <> " <"
+    <> artifactRefUri artifactRef
+    <> ">]"
 
 fileRefText :: FileRef -> Text
 fileRefText fileRef =
-  "[file: " <> maybe (fileRefUri fileRef) id (fileRefName fileRef) <> " <" <> fileRefUri fileRef <> ">]"
+  "[file: "
+    <> maybe (fileRefUri fileRef) id (fileRefName fileRef)
+    <> " <"
+    <> fileRefUri fileRef
+    <> ">]"
 
 audioRefText :: AudioRef -> Text
 audioRefText audioRef = "[audio: " <> audioRefUri audioRef <> "]"
