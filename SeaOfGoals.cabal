@@ -24,10 +24,15 @@ library
     exposed-modules:
         Agent.LLM.Transport
         Agent.SeaOfGoals.Agentic
+        Agent.SeaOfGoals.ExperimentRunner
+        Agent.SeaOfGoals.Harness
         Agent.SeaOfGoals.LLM
         Agent.SeaOfGoals.LLM.Backends.GPT
         Agent.SeaOfGoals.LLM.Backends.Gemini
         Agent.SeaOfGoals.Talks
+        Agent.SeaOfGoals.Tools
+        Agent.SeaOfGoals.Trace
+        Agent.SeaOfGoals.Workflow
     -- other-modules:
     -- other-extensions:
     build-depends:
@@ -40,24 +45,22 @@ library
         http-client-tls,
         http-types,
         containers,
-        text
+        directory,
+        filepath,
+        process,
+        text,
+        time
     hs-source-dirs:   lib
     default-language: GHC2024
 
-executable SeaOfGoals
+test-suite SeaOfGoals-agent-runner
     import:           warnings
+    type:             exitcode-stdio-1.0
     main-is:          Main.hs
-    -- other-modules:
-    -- other-extensions:
     build-depends:
-        aeson,
-        aeson-qq,
         base ^>=4.21.0.0,
-        SeaOfGoals,
-        containers,
-        text
-
-    hs-source-dirs:   exe
+        SeaOfGoals
+    hs-source-dirs:   test-suite/agent-runner
     default-language: GHC2024
 
 test-suite SeaOfGoals-test
@@ -72,5 +75,6 @@ test-suite SeaOfGoals-test
         aeson,
         aeson-qq,
         base ^>=4.21.0.0,
+        containers,
         SeaOfGoals,
         text

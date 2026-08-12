@@ -1,0 +1,23 @@
+You are testing the test-with-postgres skill.
+
+Read /skill/SKILL.md first with `cat /skill/SKILL.md` and follow it as the task guide.
+
+Task:
+Run the PostgreSQL-backed Go tests in /workspace.
+
+Before each meaningful step, call begin_subgoal.
+After each step, call end_subgoal.
+Use shell for local inspection and test commands.
+Do not use write_file on /skill/SKILL.md.
+Use record_effect for observed database effects, test result artifacts, and produced traceable outputs.
+
+Important harness constraint:
+The PostgreSQL dependency is already supplied by Docker Compose at $POSTGRES_TEST_DB.
+Do not try to run Docker inside the runner container.
+Use the supplied connection string when invoking go test.
+
+Expected command shape:
+go test -v ./... -postgres-test-db "$POSTGRES_TEST_DB"
+
+Do not call external business APIs.
+Do not finish until the tests have run and the result has been recorded.

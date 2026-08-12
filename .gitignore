@@ -1,3 +1,14 @@
 dist-newstyle/
 dist/
 test-output/
+
+# Local editor state
+.vscode/
+extensions/*/.vscode/
+
+# Experiment run outputs are local caches. Keep each runs/.gitignore tracked.
+test-suite/skill-experiments/*/runs/*
+!test-suite/skill-experiments/*/runs/.gitignore
+
+# SCFG generation metadata can contain raw model prompts/responses.
+test-suite/skill-experiments/**/.model_interactions/

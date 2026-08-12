@@ -1,0 +1,27 @@
+{
+  "name": "test-with-postgres",
+  "nodes": [
+    {
+      "id": "N001",
+      "title": "Starting PostgreSQL",
+      "body": "PostgreSQL must be running before tests can execute. Use Docker to start a PostgreSQL instance: ```bash # Check if postgres container is already running docker ps --filter name=storj_unit_tests_postgres --format '{{.Names}}' # If not running, start it: docker run --rm -d -p 5433:5432 --name storj_unit_tests_postgres -e POSTGRES_PASSWORD=tmppass postgres:17 # Wait for postgres to be ready (retry until successful) until docker exec storj_unit_tests_postgres psql -h localhost -U postgres -d postgres -c \"select 1\" > /dev/null 2>&1; do"
+    },
+    {
+      "id": "N002",
+      "title": "Running Tests",
+      "body": "1. **If test name is provided in arguments**: - Find the package containing the test using Grep - Run the test with PostgreSQL configured 2. **If only package path is provided**: - Run all tests in that package with PostgreSQL configured 3. **Command format**: ```bash go test -v ./package/path -run TestName -postgres-test-db 'postgres://postgres:tmppass@localhost:5433/teststorj?sslmode=disable' ``` 4. **Report test results**: - Show whether tests passed or failed - List all subtests that ran - If tests failed, offer to help investigate the failures"
+    },
+    {
+      "id": "N003",
+      "title": "Cleanup",
+      "body": "To stop the PostgreSQL container when done: ```bash docker rm -f storj_unit_tests_postgres ```"
+    }
+  ],
+  "edges": [
+    {
+      "source": "N001",
+      "target": "N002",
+      "rationale": "if necessary"
+    }
+  ]
+}

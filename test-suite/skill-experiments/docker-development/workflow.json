@@ -1,0 +1,92 @@
+{
+  "name": "docker-development",
+  "nodes": [
+    {
+      "id": "N001",
+      "title": "Analyze current state",
+      "body": "- Read the Dockerfile - Identify base image and its size - Count layers (each RUN/COPY/ADD = 1 layer) - Check for common anti-patterns"
+    },
+    {
+      "id": "N002",
+      "title": "Apply optimization checklist",
+      "body": "``` BASE IMAGE ├── Use specific tags, never :latest in production ├── Prefer slim/alpine variants (debian-slim > ubuntu > debian) ├── Pin digest for reproducibility in CI: image@sha256:... └── Match base to runtime needs (don't use python:3.12 for a compiled binary) LAYER OPTIMIZATION ├── Combine related RUN commands with && \\ ├── Order layers: least-changing first (deps before source code) ├── Clean package manager cache in the same RUN layer ├── Use .dockerignore to exclude unnecessary files └── Separate build deps from runtime deps"
+    },
+    {
+      "id": "N003",
+      "title": "Generate optimized Dockerfile",
+      "body": "- Apply all relevant optimizations - Add inline comments explaining each decision - Report estimated size reduction"
+    },
+    {
+      "id": "N004",
+      "title": "Validate",
+      "body": "```bash python3 scripts/dockerfile_analyzer.py Dockerfile ```"
+    },
+    {
+      "id": "N005",
+      "title": "Identify services",
+      "body": "- Application (web, API, worker) - Database (postgres, mysql, redis, mongo) - Cache (redis, memcached) - Queue (rabbitmq, kafka) - Reverse proxy (nginx, traefik, caddy)"
+    },
+    {
+      "id": "N006",
+      "title": "Apply compose best practices",
+      "body": "``` SERVICES ├── Use depends_on with condition: service_healthy ├── Add healthchecks for every service ├── Set resource limits (mem_limit, cpus) ├── Use named volumes for persistent data └── Pin image versions NETWORKING ├── Create explicit networks (don't rely on default) ├── Separate frontend and backend networks ├── Only expose ports that need external access └── Use internal: true for backend-only networks ENVIRONMENT ├── Use env_file for secrets, not inline environment ├── Never commit .env files (add to .gitignore)"
+    },
+    {
+      "id": "N007",
+      "title": "Generate compose file",
+      "body": "- Output docker-compose.yml with healthchecks, networks, volumes - Generate .env.example with all required variables documented - Add dev/prod profile annotations"
+    },
+    {
+      "id": "N008",
+      "title": "Dockerfile audit",
+      "body": "| Check | Severity | Fix | |-------|----------|-----| | Running as root | Critical | Add `USER nonroot` after creating user | | Using :latest tag | High | Pin to specific version | | Secrets in ENV/ARG | Critical | Use BuildKit secrets: `--mount=type=secret` | | COPY with broad glob | Medium | Use specific paths, add .dockerignore | | Unnecessary EXPOSE | Low | Only expose ports the app uses | | No HEALTHCHECK | Medium | Add HEALTHCHECK with appropriate interval | | Privileged instructions | High | Avoid `--privileged`, drop capabilities |"
+    },
+    {
+      "id": "N009",
+      "title": "Runtime security checks",
+      "body": "| Check | Severity | Fix | |-------|----------|-----| | Container running as root | Critical | Set user in Dockerfile or compose | | Writable root filesystem | Medium | Use `read_only: true` in compose | | All capabilities retained | High | Drop all, add only needed: `cap_drop: [ALL]` | | No resource limits | Medium | Set `mem_limit` and `cpus` | | Host network mode | High | Use bridge or custom network | | Sensitive mounts | Critical | Never mount /etc, /var/run/docker.sock in prod | | No log driver configured | Low | Set `logging:` with size limits |"
+    },
+    {
+      "id": "N010",
+      "title": "Generate security report",
+      "body": "``` SECURITY AUDIT — [Dockerfile/Image name] Date: [timestamp] CRITICAL: [count] HIGH:     [count] MEDIUM:   [count] LOW:      [count] [Detailed findings with fix recommendations] ```"
+    }
+  ],
+  "edges": [
+    {
+      "source": "N001",
+      "target": "N002",
+      "rationale": "if necessary"
+    },
+    {
+      "source": "N002",
+      "target": "N003",
+      "rationale": "if necessary"
+    },
+    {
+      "source": "N003",
+      "target": "N004",
+      "rationale": "if necessary"
+    },
+    {
+      "source": "N005",
+      "target": "N006",
+      "rationale": "if necessary"
+    },
+    {
+      "source": "N006",
+      "target": "N007",
+      "rationale": "if necessary"
+    },
+    {
+      "source": "N008",
+      "target": "N009",
+      "rationale": "if necessary"
+    },
+    {
+      "source": "N009",
+      "target": "N010",
+      "rationale": "if necessary"
+    }
+  ]
+}

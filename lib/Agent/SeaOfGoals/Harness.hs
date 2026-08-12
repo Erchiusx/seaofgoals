@@ -1,0 +1,247 @@
+module Agent.SeaOfGoals.Harness
+  ( HarnessConfig (..)
+  , HarnessState (..)
+  , runHarness
+  )
+where
+
+import Agent.SeaOfGoals.LLM
+  ( LLM (runLLM)
+  , LLMContentPart (TextPart)
+  , LLMInputItem (MessageInput, ToolCallInput, ToolResultInput)
+  , LLMMessage (..)
+  , LLMRequest (..)
+  , LLMResponse (..)
+  , LLMRole (..)
+  , ToolCall (..)
+  , ToolResult (..)
+  )
+import Agent.SeaOfGoals.Tools
+  ( ToolSpec (..)
+  , runToolHandler
+  , toolSpecToOpenAITool
+  )
+import Agent.SeaOfGoals.Trace
+  ( HarnessEvent (..)
+  )
+import Agent.SeaOfGoals.Workflow
+  ( WorkflowNode (..)
+  , WorkflowSpec (..)
+  , WorkflowStatus
+  , emptyWorkflowStatus
+  , updateWorkflowStatus
+  , workflowStatusEvent
+  )
+import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as AesonKey
+import Data.Aeson.KeyMap qualified as AesonKeyMap
+import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
+import Data.String (fromString)
+import Data.Text (Text)
+
+data HarnessConfig provider = HarnessConfig
+  { harnessProvider :: provider
+  , harnessRequestTemplate :: LLMRequest
+  , harnessSystemPrompt :: Text
+  , harnessUserPrompt :: Text
+  , harnessTools :: [ToolSpec]
+  , harnessMaxTurns :: Int
+  , harnessEventSink :: HarnessEvent -> IO ()
+  , harnessWorkflowSpec :: Maybe WorkflowSpec
+  }
+
+data HarnessState = HarnessState
+  { harnessHistory :: [LLMInputItem]
+  , harnessActiveSubgoal :: Maybe Text
+  , harnessWorkflowStatus :: WorkflowStatus
+  }
+  deriving stock (Eq, Show)
+
+runHarness :: LLM provider => HarnessConfig provider -> IO HarnessState
+runHarness config = do
+  harnessEventSink config (HarnessStarted (harnessUserPrompt config))
+  loop
+    (max 1 (harnessMaxTurns config))
+    initialState
+ where
+  toolMap = Map.fromList [(toolName tool, tool) | tool <- harnessTools config]
+
+  initialState =
+    HarnessState
+      { harnessHistory =
+          [ MessageInput
+              LLMMessage
+                { messageRole = System
+                , messageContent = [TextPart (harnessSystemPrompt config)]
+                }
+          , MessageInput
+              LLMMessage
+                { messageRole = User
+                , messageContent = [TextPart (harnessUserPrompt config)]
+                }
+          ]
+      , harnessActiveSubgoal = Nothing
+      , harnessWorkflowStatus = emptyWorkflowStatus
+      }
+
+  loop turnsLeft state
+    | turnsLeft <= 0 = do
+        harnessEventSink config (HarnessFinished "max_turns_reached")
+        pure state
+    | otherwise = do
+        result <-
+          runLLM
+            (harnessProvider config)
+            (harnessRequestTemplate config)
+              { requestInput = harnessHistory state
+              , requestTools = fmap toolSpecToOpenAITool (harnessTools config)
+              }
+        case result of
+          Left err -> do
+            harnessEventSink config (HarnessFinished ("llm_error: " <> showText err))
+            pure state
+          Right response ->
+            handleResponse turnsLeft state response
+
+  handleResponse turnsLeft state response = do
+    let assistantText = messageText (responseMessage response)
+    harnessEventSink config (AssistantMessageObserved assistantText)
+    let nextHistory = harnessHistory state <> responseOutput response
+    if null (responseToolCalls response)
+      then do
+        harnessEventSink
+          config
+          (HarnessFinished (fromMaybe "assistant_finished" (responseFinishReason response)))
+        pure state{harnessHistory = nextHistory}
+      else do
+        stateAfterTools <-
+          runToolCalls state{harnessHistory = nextHistory} (responseToolCalls response)
+        loop (turnsLeft - 1) stateAfterTools
+
+  runToolCalls state [] = pure state
+  runToolCalls state (toolCall : rest) = do
+    let effectiveToolCall =
+          canonicalizeWorkflowToolCall (harnessWorkflowSpec config) toolCall
+    harnessEventSink
+      config
+      ToolCallObserved
+        { eventCallId = toolCallId effectiveToolCall
+        , eventToolName = toolCallName effectiveToolCall
+        , eventArguments = toolCallArguments effectiveToolCall
+        , eventActiveSubgoal = harnessActiveSubgoal state
+        }
+    case Map.lookup (toolCallName effectiveToolCall) toolMap of
+      Nothing -> do
+        let result =
+              unknownToolResult effectiveToolCall
+        harnessEventSink
+          config
+          ToolResultObserved
+            { eventCallId = toolCallId effectiveToolCall
+            , eventToolName = toolCallName effectiveToolCall
+            , eventResult = "unknown tool"
+            , eventActiveSubgoal = harnessActiveSubgoal state
+            }
+        runToolCalls
+          state{harnessHistory = harnessHistory state <> [ToolResultInput result]}
+          rest
+      Just tool -> do
+        (result, events) <- runToolHandler tool effectiveToolCall
+        let
+          eventsWithActiveSubgoal =
+            fmap (attachActiveSubgoal (harnessActiveSubgoal state)) events
+          nextWorkflowStatus =
+            foldl
+              (updateWorkflowStatus (harnessWorkflowSpec config))
+              (harnessWorkflowStatus state)
+              eventsWithActiveSubgoal
+        mapM_ (harnessEventSink config) eventsWithActiveSubgoal
+        if nextWorkflowStatus == harnessWorkflowStatus state
+          then pure ()
+          else harnessEventSink config (workflowStatusEvent nextWorkflowStatus)
+        harnessEventSink
+          config
+          ToolResultObserved
+            { eventCallId = toolCallId effectiveToolCall
+            , eventToolName = toolCallName effectiveToolCall
+            , eventResult = messageText (LLMMessage Tool (toolResultContent result))
+            , eventActiveSubgoal = harnessActiveSubgoal state
+            }
+        runToolCalls
+          state
+            { harnessHistory =
+                harnessHistory state
+                  <> [ToolCallInput effectiveToolCall, ToolResultInput result]
+            , harnessActiveSubgoal =
+                updateActiveSubgoal
+                  (harnessActiveSubgoal state)
+                  eventsWithActiveSubgoal
+            , harnessWorkflowStatus =
+                nextWorkflowStatus
+            }
+          rest
+
+attachActiveSubgoal :: Maybe Text -> HarnessEvent -> HarnessEvent
+attachActiveSubgoal activeSubgoal event =
+  case event of
+    EffectRecorded effect Nothing ->
+      EffectRecorded effect activeSubgoal
+    _ -> event
+
+canonicalizeWorkflowToolCall :: Maybe WorkflowSpec -> ToolCall -> ToolCall
+canonicalizeWorkflowToolCall maybeSpec toolCall
+  | toolCallName toolCall /= "begin_subgoal" = toolCall
+  | otherwise =
+      case (maybeSpec, toolCallArguments toolCall) of
+        (Just spec, Aeson.Object arguments) ->
+          case AesonKeyMap.lookup (AesonKey.fromText "id") arguments of
+            Just (Aeson.String subgoalId) ->
+              case workflowNodeTitleFor spec subgoalId of
+                Just title ->
+                  toolCall
+                    { toolCallArguments =
+                        Aeson.Object
+                          ( AesonKeyMap.insert
+                              (AesonKey.fromText "name")
+                              (Aeson.String title)
+                              arguments
+                          )
+                    }
+                Nothing -> toolCall
+            _ -> toolCall
+        _ -> toolCall
+
+workflowNodeTitleFor :: WorkflowSpec -> Text -> Maybe Text
+workflowNodeTitleFor spec subgoalId =
+  foldr matchNode Nothing (workflowNodes spec)
+ where
+  matchNode node fallback
+    | workflowNodeId node == subgoalId = Just (workflowNodeTitle node)
+    | otherwise = fallback
+
+unknownToolResult :: ToolCall -> ToolResult
+unknownToolResult toolCall =
+  ToolResult
+    { toolResultCallId = toolCallId toolCall
+    , toolResultName = Just (toolCallName toolCall)
+    , toolResultContent = [TextPart "Unknown tool"]
+    }
+
+updateActiveSubgoal :: Maybe Text -> [HarnessEvent] -> Maybe Text
+updateActiveSubgoal = foldl step
+ where
+  step _ SubgoalStarted{eventSubgoalId = subgoalId} = Just subgoalId
+  step _ SubgoalEnded{} = Nothing
+  step current _ = current
+
+messageText :: LLMMessage -> Text
+messageText message =
+  foldMap contentPartText (messageContent message)
+
+contentPartText :: LLMContentPart -> Text
+contentPartText (TextPart text) = text
+contentPartText _ = ""
+
+showText :: Show value => value -> Text
+showText = fromString . show

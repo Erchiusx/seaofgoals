@@ -9,9 +9,11 @@ import Agent.SeaOfGoals.LLM (LLMError (..))
 import Control.Exception (try)
 import Data.Aeson (Value, decode, encode)
 import Data.ByteString.Char8 qualified as ByteString
-import Data.ByteString.Lazy.Char8 qualified as LazyByteString
+import Data.ByteString.Lazy qualified as LazyByteString
 import Data.CaseInsensitive qualified as CaseInsensitive
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
+import Data.Text.Encoding.Error (lenientDecode)
 import Network.HTTP.Client
   ( RequestBody (RequestBodyLBS)
   , httpLbs
@@ -40,7 +42,7 @@ data TransportRequest = TransportRequest
 data TransportResponse = TransportResponse
   { transportStatus :: Int
   , transportResponseHeaders :: [(String, String)]
-  , transportResponseBody :: String
+  , transportResponseBody :: LazyByteString.ByteString
   , transportResponseJSON :: Maybe Value
   }
   deriving stock (Eq, Show)
@@ -52,23 +54,28 @@ sendJSON transportRequest = do
     Left err -> pure (Left err)
     Right baseRequest -> do
       manager <- newManager tlsManagerSettings
-      rawResponse <-
-        httpLbs (withTransportRequest baseRequest transportRequest) manager
-      let
-        responseStatusCode = statusCode (responseStatus rawResponse)
-        rawBody = responseBody rawResponse
-        transportResponse =
-          TransportResponse
-            { transportStatus = responseStatusCode
-            , transportResponseHeaders = decodeHeaders (responseHeaders rawResponse)
-            , transportResponseBody = LazyByteString.unpack rawBody
-            , transportResponseJSON = decode rawBody
-            }
-      pure $
-        if responseStatusCode >= 200 && responseStatusCode < 300
-          then Right transportResponse
-          else
-            Left (LLMTransportError (Text.pack (transportResponseBody transportResponse)))
+      rawResponseResult <-
+        try (httpLbs (withTransportRequest baseRequest transportRequest) manager)
+      case rawResponseResult of
+        Left (err :: HTTP.HttpException) ->
+          pure (Left (LLMTransportError (Text.pack (show err))))
+        Right rawResponse -> do
+          let
+            responseStatusCode = statusCode (responseStatus rawResponse)
+            rawBody = responseBody rawResponse
+            transportResponse =
+              TransportResponse
+                { transportStatus = responseStatusCode
+                , transportResponseHeaders = decodeHeaders (responseHeaders rawResponse)
+                , transportResponseBody = rawBody
+                , transportResponseJSON = decode rawBody
+                }
+          pure $
+            if responseStatusCode >= 200 && responseStatusCode < 300
+              then Right transportResponse
+              else
+                Left
+                  (LLMTransportError (decodeBodyText (transportResponseBody transportResponse)))
 
 tryParseRequest :: String -> IO (Either LLMError HTTP.Request)
 tryParseRequest url = do
@@ -109,3 +116,7 @@ decodeHeaders =
     ( \(name, value) ->
         (ByteString.unpack (CaseInsensitive.original name), ByteString.unpack value)
     )
+
+decodeBodyText :: LazyByteString.ByteString -> Text.Text
+decodeBodyText =
+  TextEncoding.decodeUtf8With lenientDecode . LazyByteString.toStrict

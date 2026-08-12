@@ -1,0 +1,40 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: migration_review
+    ports:
+      - "15435:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d migration_review"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  runner:
+    build:
+      context: .
+      dockerfile: runner.Dockerfile
+    user: "${SOG_RUNNER_UID:-1000}:${SOG_RUNNER_GID:-1000}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      SOG_TRACE_PATH: /workspace/sog-trace.jsonl
+      SOG_WORKFLOW_SPEC: /workflow.json
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/migration_review
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    volumes:
+      - ${SOG_EXECUTABLE:?set SOG_EXECUTABLE to the built SeaOfGoals binary}:/usr/local/bin/SeaOfGoals:ro
+      - ./fixture:/seed:ro
+      - ./runs/current:/workspace
+      - ./prompt.txt:/prompt.txt:ro
+      - ./workflow.json:/workflow.json:ro
+      - ${DATABASE_MIGRATIONS_SKILL:-/home/erchius/datasets/SSL/docs/testsets/database-migrations/SKILL.md}:/skill/SKILL.md:ro
+    working_dir: /workspace
+    command: >
+      bash -lc 'find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf {} + && cp -a /seed/. /workspace/ && SeaOfGoals "$$(cat /prompt.txt)"'

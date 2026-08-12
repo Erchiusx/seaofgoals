@@ -1,0 +1,22 @@
+services:
+  runner:
+    build:
+      context: .
+      dockerfile: runner.Dockerfile
+    user: "${SOG_RUNNER_UID:-1000}:${SOG_RUNNER_GID:-1000}"
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      SOG_TRACE_PATH: /workspace/sog-trace.jsonl
+      SOG_WORKFLOW_SPEC: /workflow.json
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    volumes:
+      - ${SOG_EXECUTABLE:?set SOG_EXECUTABLE to the built SeaOfGoals binary}:/usr/local/bin/SeaOfGoals:ro
+      - ./fixture:/seed:ro
+      - ./runs/current:/workspace
+      - ./prompt.txt:/prompt.txt:ro
+      - ./workflow.json:/workflow.json:ro
+      - ${DOCKER_DEVELOPMENT_SKILL:-/home/erchius/datasets/SSL/docs/testsets/docker-development/SKILL.md}:/skill/SKILL.md:ro
+    working_dir: /workspace
+    command: >
+      bash -lc 'find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf {} + && cp -a /seed/. /workspace/ && SeaOfGoals "$$(cat /prompt.txt)"'

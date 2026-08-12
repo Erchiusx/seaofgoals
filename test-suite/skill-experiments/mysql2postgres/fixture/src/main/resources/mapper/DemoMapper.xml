@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.demo.dal.mysql.DemoMapper">
+  <select id="listActiveUsers" resultType="com.example.demo.dal.mysql.DemoEntityDO">
+    SELECT
+      u.id,
+      IFNULL(u.username, 'anonymous') AS username,
+      DATE_FORMAT(u.created_at, '%Y-%m-%d') AS created_day,
+      d.status_col,
+      MIN(d.amount_col) AS amount_col
+    FROM demo_entity u
+    LEFT JOIN demo_order_detail d ON u.id = d.user_id
+    WHERE u.deleted = 0
+    GROUP BY u.id
+  </select>
+
+  <insert id="insertIgnoreUser">
+    INSERT IGNORE INTO demo_entity (id, username, deleted)
+    VALUES (#{id}, #{username}, 0)
+  </insert>
+
+  <update id="copyNameFromProfile">
+    UPDATE demo_entity u
+    INNER JOIN demo_profile p ON u.id = p.user_id
+    SET u.username = p.display_name
+    WHERE u.deleted = 0
+  </update>
+
+  <delete id="softDeleteUser">
+    UPDATE demo_entity SET deleted = 1 WHERE id = #{id}
+  </delete>
+</mapper>

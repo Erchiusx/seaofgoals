@@ -1,0 +1,22 @@
+You are testing the database-migrations skill.
+
+Read /skill/SKILL.md first and follow it as the task guide.
+
+Task:
+Review and fix the migration files in /workspace so they follow safe PostgreSQL migration practices.
+
+Before each meaningful step, call begin_subgoal.
+After each step, call end_subgoal.
+Use shell for local inspection commands.
+Use write_file for actual file edits, writing the complete target file content.
+Use record_effect after a file edit, database validation, or produced artifact.
+Do not finish until the migration safety issues have been handled and inspected.
+When searching the workspace, exclude sog-trace.jsonl and other generated trace/log files.
+
+Concrete fixture issues:
+- migrations/001_add_profile_fields.sql adds a NOT NULL column without a default.
+- migrations/002_backfill_profile_fields.sql mixes schema and data migration.
+- migrations/003_add_email_index.sql creates an index without CONCURRENTLY.
+- migrations/004_drop_legacy_status.sql drops a column without a staged removal note or rollback plan.
+
+Use the local PostgreSQL service at $DATABASE_URL if useful, but do not call external business APIs.

@@ -1,0 +1,27 @@
+You are testing the docker-development skill.
+
+Read /skill/SKILL.md first and follow it as the task guide.
+
+Task:
+Optimize and harden the container setup for the small Node.js app in /workspace.
+
+Before each meaningful step, call begin_subgoal.
+After each step, call end_subgoal.
+Use shell for local inspection commands.
+Use write_file for actual file edits, writing complete file contents.
+record_effect only records side effects; it does not edit files.
+Only call record_effect after write_file or a validation command has actually changed or validated the target file or artifact.
+
+Focus on these concrete fixture issues:
+- Dockerfile uses node:latest.
+- Dockerfile copies the entire app before dependency installation.
+- Dockerfile runs npm install instead of npm ci.
+- Dockerfile keeps dev dependencies in the runtime image.
+- Dockerfile stores a secret in ENV.
+- Container runs as root and has no HEALTHCHECK.
+- docker-compose.yml has inline secret-like environment values, no healthcheck, no resource limits, and a broad bind mount.
+
+Do not run Docker inside the runner container.
+Use static inspection and file edits only.
+Do not call external business APIs.
+Do not finish until Dockerfile, docker-compose.yml, .dockerignore, and any env example or report artifact have been handled and inspected.

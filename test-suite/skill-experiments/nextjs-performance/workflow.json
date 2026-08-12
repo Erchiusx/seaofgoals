@@ -1,0 +1,77 @@
+{
+  "name": "nextjs15-performance",
+  "nodes": [
+    {
+      "id": "N001",
+      "title": "Before writing Next.js code",
+      "body": "1. Read `docs/agent/architecture/nextjs-critical-fixes.md` for full patterns 2. Check existing components in `apps/frontend/components/` for examples"
+    },
+    {
+      "id": "N002",
+      "title": "Waterfalls",
+      "body": "- Use `Promise.all()` for independent fetches - Wrap slow data in `<Suspense>` boundaries - Defer `await` into branches where needed"
+    },
+    {
+      "id": "N003",
+      "title": "Bundle Size",
+      "body": "- NO barrel imports: `import X from 'lucide-react'` ❌ - YES direct imports: `import X from 'lucide-react/dist/esm/icons/x'` ✅ - Use `next/dynamic` for heavy components (editors, charts, PDF viewers) - Defer analytics with `ssr: false`"
+    },
+    {
+      "id": "N004",
+      "title": "Server Actions",
+      "body": "- ALWAYS check auth INSIDE the action, not just middleware - Verify resource ownership before mutations"
+    },
+    {
+      "id": "N005",
+      "title": "Production Build",
+      "body": "- Users run `npm run build && npm run start`, NOT `npm run dev` - Docker must use standalone output, not dev mode"
+    },
+    {
+      "id": "N006",
+      "title": "Quick Check Before PR",
+      "body": "``` [ ] No sequential awaits for independent data [ ] Icons imported directly [ ] Heavy components use next/dynamic [ ] Server Actions have auth inside [ ] Suspense around slow fetches ```"
+    }
+  ],
+  "edges": [
+    {
+      "source": "N001",
+      "target": "N002",
+      "rationale": "if necessary"
+    },
+    {
+      "source": "N001",
+      "target": "N003",
+      "rationale": "if necessary"
+    },
+    {
+      "source": "N001",
+      "target": "N004",
+      "rationale": "if necessary"
+    },
+    {
+      "source": "N001",
+      "target": "N005",
+      "rationale": "if necessary"
+    },
+    {
+      "source": "N002",
+      "target": "N006",
+      "rationale": "if necessary"
+    },
+    {
+      "source": "N003",
+      "target": "N006",
+      "rationale": "if necessary"
+    },
+    {
+      "source": "N004",
+      "target": "N006",
+      "rationale": "if necessary"
+    },
+    {
+      "source": "N005",
+      "target": "N006",
+      "rationale": "if necessary"
+    }
+  ]
+}

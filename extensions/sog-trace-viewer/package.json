@@ -1,0 +1,41 @@
+{
+  "name": "sog-trace-viewer",
+  "displayName": "SeaOfGoals Trace Viewer",
+  "description": "Jupyter-style trajectory view for SeaOfGoals sog-trace.jsonl files.",
+  "version": "0.0.1",
+  "publisher": "seaofgoals",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:sogTrace.openTrace"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "sogTrace.openTrace",
+        "title": "SeaOfGoals: Open Trace View"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "sogTrace.openTrace",
+          "when": "resourceFilename =~ /sog-trace\\.jsonl$/",
+          "group": "navigation"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "sogTrace.openTrace",
+          "when": "resourceFilename =~ /sog-trace\\.jsonl$/",
+          "group": "navigation"
+        }
+      ]
+    }
+  }
+}

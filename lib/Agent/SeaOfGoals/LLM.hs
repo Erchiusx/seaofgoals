@@ -360,4 +360,3 @@ snakeCase = go True
     | isUpper char =
         (if isFirst then [] else "_") <> [toLower char] <> go False rest
     | otherwise = char : go False rest
-

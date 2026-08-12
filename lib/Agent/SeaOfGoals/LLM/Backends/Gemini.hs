@@ -40,7 +40,6 @@ import Data.Aeson
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key (Key)
 import Data.Aeson.Types (Pair)
-import Data.ByteString.Lazy.Char8 qualified as LazyByteString
 import Data.Functor ((<&>))
 import Data.Maybe (catMaybes)
 import Data.Text (Text)
@@ -173,7 +172,7 @@ generationConfigPair request =
 fromGeminiResponse
   :: LLMRequest -> TransportResponse -> Either LLMError LLMResponse
 fromGeminiResponse request response =
-  case Aeson.decode (LazyByteString.pack (transportResponseBody response)) of
+  case Aeson.decode (transportResponseBody response) of
     Nothing -> Left (LLMProviderError "Could not decode Gemini response")
     Just geminiResponse ->
       case geminiCandidates geminiResponse of

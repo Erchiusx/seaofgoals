@@ -42,9 +42,12 @@ import Data.Aeson
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key (Key)
 import Data.Aeson.Types (Pair)
-import Data.ByteString.Lazy.Char8 qualified as LazyByteString
+import Data.ByteString.Lazy qualified as LazyByteString
+import Data.ByteString.Lazy.Char8 qualified as LazyByteStringChar8
 import Data.Maybe (catMaybes)
 import Data.Text (Text)
+import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 
 data GPTBackend = GPTBackend
   { gptApiKey :: String
@@ -74,12 +77,17 @@ toGPTRequest request =
         [ Just ("model" .= requestModel request)
         , Just ("messages" .= concatMap toGPTInputItem (requestInput request))
         , ("temperature" .=) <$> requestTemperature request
-        , ("max_tokens" .=) <$> requestMaxTokens request
+        , tokenLimitPair (requestModel request) <$> requestMaxTokens request
         , nonEmpty "stop" (requestStopSequences request)
         , responseFormatPair (requestResponseFormat request)
         , nonEmpty "tools" (requestTools request)
         ]
     )
+
+tokenLimitPair :: Text -> Int -> Pair
+tokenLimitPair model maxTokens
+  | "gpt-5" `Text.isPrefixOf` model = "max_completion_tokens" .= maxTokens
+  | otherwise = "max_tokens" .= maxTokens
 
 toGPTInputItem :: LLMInputItem -> [Value]
 toGPTInputItem (MessageInput message) = [toGPTMessage message]
@@ -113,11 +121,15 @@ toGPTToolCallMessage toolCall =
                , "function"
                    .= object
                      [ "name" .= toolCallName toolCall
-                     , "arguments" .= toolCallArguments toolCall
+                     , "arguments" .= encodeToolArguments (toolCallArguments toolCall)
                      ]
                ]
            ]
     ]
+
+encodeToolArguments :: Value -> Text
+encodeToolArguments =
+  Text.pack . LazyByteStringChar8.unpack . Aeson.encode
 
 toGPTToolResultMessage :: ToolResult -> Value
 toGPTToolResultMessage toolResult =
@@ -139,7 +151,7 @@ responseFormatPair (JsonSchema schema) =
 fromGPTResponse
   :: LLMRequest -> TransportResponse -> Either LLMError LLMResponse
 fromGPTResponse request response =
-  case decode (LazyByteString.pack (transportResponseBody response)) of
+  case decode (transportResponseBody response) of
     Nothing -> Left (LLMProviderError "Could not decode GPT response")
     Just gptResponse ->
       case gptChoices gptResponse of
@@ -165,11 +177,12 @@ fromGPTResponse request response =
               }
 
 responseItems :: Text -> [ToolCall] -> [LLMInputItem]
-responseItems content toolCalls =
-  [ MessageInput
-      LLMMessage{messageRole = Assistant, messageContent = [TextPart content]}
-  ]
-    <> fmap ToolCallInput toolCalls
+responseItems content toolCalls
+  | Text.null content && not (null toolCalls) = []
+  | otherwise =
+      [ MessageInput
+          LLMMessage{messageRole = Assistant, messageContent = [TextPart content]}
+      ]
 
 data GPTResponse = GPTResponse
   { gptResponseModel :: Maybe Text
@@ -219,10 +232,18 @@ instance FromJSON GPTToolCall where
   parseJSON =
     withObject "GPTToolCall" $ \objectValue -> do
       functionValue <- objectValue .: "function"
+      rawArguments <- functionValue .:? "arguments" .!= Aeson.Null
       GPTToolCall
         <$> objectValue .: "id"
         <*> functionValue .: "name"
-        <*> functionValue .:? "arguments" .!= Aeson.Null
+        <*> pure (normalizeToolArguments rawArguments)
+
+normalizeToolArguments :: Value -> Value
+normalizeToolArguments (Aeson.String text) =
+  case decode (LazyByteString.fromStrict (TextEncoding.encodeUtf8 text)) of
+    Just value -> value
+    Nothing -> Aeson.String text
+normalizeToolArguments value = value
 
 fromGPTToolCall :: GPTToolCall -> ToolCall
 fromGPTToolCall gptToolCall =

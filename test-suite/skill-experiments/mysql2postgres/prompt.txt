@@ -1,0 +1,25 @@
+You are testing the mysql2postgres skill.
+
+Read /skill/SKILL.md first and follow it as the task guide.
+
+Task:
+Migrate the small Java/Spring/MyBatis fixture in /workspace from MySQL-oriented database code to PostgreSQL-oriented database code.
+
+Before each meaningful step, call begin_subgoal.
+After each step, call end_subgoal.
+Use shell for local inspection commands.
+Use write_file for actual file edits, writing the complete target file content.
+record_effect only records side effects; it does not edit files.
+Only call record_effect after write_file, a shell command, or database command has actually changed or validated the target file, database/schema, or artifact.
+Do not finish until all concrete fixture issues listed below have been handled and inspected.
+When searching the workspace, exclude sog-trace.jsonl and other generated trace/log files.
+Prefer a small number of coarse subgoals: inspect, update application config, update XML SQL, update Java namespace/classes, update migration SQL, validate.
+
+Focus on these concrete fixture issues:
+- application.yml uses jdbc:mysql and SELECT 1 FROM DUAL.
+- MyBatis XML uses IFNULL, DATE_FORMAT, INSERT IGNORE, UPDATE JOIN, deleted = 0, deleted = 1, and non-strict GROUP BY.
+- DemoEntityDO uses @KeySequence but the migration SQL does not create the PostgreSQL sequence.
+- Java/XML namespaces use dal.mysql and should become dal.pg.
+
+Do not call external business APIs.
+Use the local PostgreSQL service at $DATABASE_URL only if you need to validate SQL.

@@ -1,0 +1,52 @@
+{
+  "name": "mysql2postgres",
+  "nodes": [
+    {
+      "id": "N001",
+      "title": "application.yaml 改动",
+      "body": "```yaml # MySQL（原） spring.datasource.url: jdbc:mysql://host/dbname validation-query: SELECT 1 FROM DUAL # PostgreSQL（改后） spring.datasource.url: jdbc:postgresql://host/dbname?currentSchema=your_schema validation-query: SELECT 1 ``` **关键点：** - `currentSchema=your_schema` 指定默认 schema，避免每条 SQL 都加 schema 前缀 - `SELECT 1 FROM DUAL` 是 MySQL/Oracle 方言，PG 直接用 `SELECT 1` ---"
+    },
+    {
+      "id": "N002",
+      "title": "UPDATE JOIN → UPDATE FROM 详解",
+      "body": "```sql -- MySQL UPDATE orders o INNER JOIN users u ON o.user_id = u.id SET o.name = u.name WHERE o.status = 1; -- PostgreSQL UPDATE orders o SET name = u.name FROM users u WHERE o.user_id = u.id AND o.status = 1; ``` > **规律：** PG 把 JOIN 的表放到 `FROM` 子句，`WHERE` 里写关联条件。 ---"
+    },
+    {
+      "id": "N003",
+      "title": "① MyBatis-Plus 逻辑删除配置（application.yaml）：",
+      "body": "```yaml # 原（MySQL 兼容） mybatis-plus.global-config.db-config.logic-delete-value: 1 mybatis-plus.global-config.db-config.logic-not-delete-value: 0 # 改后（PG BIT literal） mybatis-plus.global-config.db-config.logic-delete-value: \"B'1'\" mybatis-plus.global-config.db-config.logic-not-delete-value: \"B'0'\" ```"
+    },
+    {
+      "id": "N004",
+      "title": "② XML 手写 SQL 中的 deleted 字段：",
+      "body": "```sql -- MySQL / 错误写法 WHERE deleted = 0 WHERE deleted = 1 -- PostgreSQL 正确写法 WHERE deleted = B'0' WHERE deleted = B'1' ``` > **⚠️ 注意：** MyBatis-Plus 自动生成的 `deleted=0` 和 XML 里手写的都要改，两处独立，不要遗漏。建议用全局搜索：`deleted = 0` / `deleted = 1`，统计 XML 文件中所有出现位置后批量替换。 ---"
+    },
+    {
+      "id": "N005",
+      "title": "修复：在对应 schema 下创建 Sequence：",
+      "body": "```sql -- 对齐现有数据的最大 ID，避免主键冲突 CREATE SEQUENCE your_schema.demo_entity_seq START WITH 10001      -- 从当前最大 id + 1 开始 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1; ``` > **最佳实践：** 迁移数据后，用 `SELECT MAX(id) FROM table` 确认最大 ID，再设置 Sequence 的起始值。 ---"
+    },
+    {
+      "id": "N006",
+      "title": "修复策略：",
+      "body": "| 情况 | 解决方案 | |------|---------| | 列的值在组内唯一（由业务保证） | 加入 `GROUP BY` | | 列是枚举/状态值，取任意值均可 | `MAX(col)` 或 `MIN(col)` | | 列是标志位，有任意一行满足即为真 | `BOOL_OR(col)` 或 `MAX(col)` | ```sql -- 原 MySQL 写法（SELECT 了非聚合列） SELECT o.id, d.flag_col, d.status_col, MIN(d.amount_col) as amount_col FROM demo_order o LEFT JOIN demo_order_detail d ON o.id = d.order_id GROUP BY o.id; -- PG 修复写法 SELECT o.id, MAX(d.flag_col) as flag_col,      -- 取最大值 MAX(d.status_col) as status_col,  -- 有任意在售即为在售 MIN(d.amount_col) as amount_col FROM demo_order o"
+    },
+    {
+      "id": "N007",
+      "title": "涉及的修改点：",
+      "body": "1. `src/main/java` 下的目录：`dal/mysql/` → `dal/pg/` 2. XML 文件中的 `namespace`：`dal.mysql.XxxMapper` → `dal.pg.XxxMapper` 3. Java 文件中的 `import` 语句 4. `application.yaml` 中的日志监控包名配置 ---"
+    },
+    {
+      "id": "N008",
+      "title": "迁移检查清单",
+      "body": "``` [ ] JDBC URL 改为 PG 格式，指定 currentSchema [ ] validation-query 去掉 FROM DUAL [ ] IFNULL → COALESCE（全局搜索替换） [ ] DATE_FORMAT → TO_CHAR [ ] DATE_ADD(...INTERVAL) → date + INTERVAL '...' [ ] CURDATE() → CURRENT_DATE [ ] CAST(x AS DATETIME) → CAST(x AS TIMESTAMP) [ ] DATE(x) → CAST(x AS DATE) [ ] INSERT IGNORE → INSERT ... ON CONFLICT DO NOTHING [ ] UPDATE ... JOIN → UPDATE ... FROM ... WHERE [ ] deleted = 0/1 → deleted = B'0'/B'1'（XML 手写 SQL） [ ] MyBatis-Plus logic-delete-value 改为 B'1' / B'0' [ ] 为每个 @KeySequence 在 PG 中创建对应 SEQUENCE"
+    }
+  ],
+  "edges": [
+    {
+      "source": "N003",
+      "target": "N004",
+      "rationale": "if necessary"
+    }
+  ]
+}
