@@ -23,6 +23,7 @@ import Agent.SeaOfGoals.LLM.Backends.GPT
   ( GPTBackend (..)
   , defaultGPTEndpoint
   )
+import Agent.SeaOfGoals.PromptTemplate (embedTextFile)
 import Agent.SeaOfGoals.Tools
   ( ToolSpec
   , objectToolSpec
@@ -93,6 +94,7 @@ runPrompt apiKey prompt = do
   tracePath <- fromMaybe "sog-trace.jsonl" <$> lookupEnv "SOG_TRACE_PATH"
   model <- Text.pack . fromMaybe "gpt-5.5" <$> lookupEnv "SOG_MODEL"
   workflowSpec <- loadWorkflowSpecFromEnv
+  skillContext <- loadSkillContextFromEnv
   createDirectoryIfMissing True (takeDirectory tracePath)
   let
     backend =
@@ -115,15 +117,16 @@ runPrompt apiKey prompt = do
         , requestConfig = Nothing
         }
     workflowPrompt = maybe "" renderWorkflowPrompt workflowSpec
+    systemPrompt =
+      Text.intercalate
+        "\n\n"
+        (filter (not . Text.null) [experimentSystemPrompt, skillContext, workflowPrompt])
   _ <-
     runHarness
       HarnessConfig
         { harnessProvider = backend
         , harnessRequestTemplate = requestTemplate
-        , harnessSystemPrompt =
-            Text.intercalate
-              "\n\n"
-              (filter (not . Text.null) [experimentSystemPrompt, workflowPrompt])
+        , harnessSystemPrompt = systemPrompt
         , harnessUserPrompt = prompt
         , harnessTools = experimentTools
         , harnessMaxTurns = 64
@@ -137,27 +140,35 @@ loadWorkflowSpecFromEnv = do
   maybePath <- lookupEnv "SOG_WORKFLOW_SPEC"
   case maybePath of
     Nothing -> pure Nothing
+    Just "" -> pure Nothing
     Just path -> do
       decoded <- eitherDecode <$> LazyByteString.readFile path
       case decoded of
         Left err -> fail ("could not parse SOG_WORKFLOW_SPEC: " <> err)
         Right spec -> pure (Just spec)
 
+loadSkillContextFromEnv :: IO Text
+loadSkillContextFromEnv = do
+  maybeText <- lookupEnv "SOG_SKILL_TEXT"
+  maybePath <- lookupEnv "SOG_SKILL_PATH"
+  skillText <-
+    case (maybeText, maybePath) of
+      (Just text, _) | not (null text) -> pure (Text.pack text)
+      (_, Just path) | not (null path) -> TextIO.readFile path
+      _ -> pure ""
+  pure
+    ( if Text.null skillText
+        then ""
+        else
+          Text.replace
+            "{{skill_text}}"
+            skillText
+            $(embedTextFile "lib/Agent/SeaOfGoals/Prompts/skill-context.txt")
+    )
+
 experimentSystemPrompt :: Text
 experimentSystemPrompt =
-  Text.unlines
-    [ "You are running inside the SeaOfGoals agent harness."
-    , "Before starting any meaningful task step, call begin_subgoal."
-    , "Do not run shell commands or record effects before begin_subgoal."
-    , "When the step is complete, call end_subgoal."
-    , "Use shell commands such as cat, sed, find, and rg to read or inspect files."
-    , "Use shell commands to actually inspect and modify local files."
-    , "Prefer write_file over shell commands for file edits."
-    , "Never use write_file to read files or to modify /skill, /seed, or mounted instruction files."
-    , "record_effect only records observed side effects; it does not modify anything."
-    , "Call record_effect after confirming a file, database, or artifact was actually changed."
-    , "Use shell for local commands only."
-    ]
+  $(embedTextFile "lib/Agent/SeaOfGoals/Prompts/experiment-system.txt")
 
 experimentTools :: [ToolSpec]
 experimentTools =

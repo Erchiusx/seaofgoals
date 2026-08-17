@@ -7,7 +7,9 @@ services:
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       SOG_TRACE_PATH: /workspace/sog-trace.jsonl
-      SOG_WORKFLOW_SPEC: /workflow.json
+      SOG_WORKFLOW_SPEC: ${SOG_WORKFLOW_SPEC-/workflow.json}
+      SOG_SKILL_TEXT: ${SOG_SKILL_TEXT}
+      SOG_MODEL: ${SOG_MODEL:-gpt-5.5}
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
     volumes:
@@ -16,7 +18,6 @@ services:
       - ./runs/current:/workspace
       - ./prompt.txt:/prompt.txt:ro
       - ./workflow.json:/workflow.json:ro
-      - ${NEXTJS_PERFORMANCE_SKILL:-/home/erchius/datasets/SSL/docs/testsets/nextjs-performance/SKILL.md}:/skill/SKILL.md:ro
     working_dir: /workspace
     command: >
       bash -lc 'find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf {} + && cp -a /seed/. /workspace/ && SeaOfGoals "$$(cat /prompt.txt)"'

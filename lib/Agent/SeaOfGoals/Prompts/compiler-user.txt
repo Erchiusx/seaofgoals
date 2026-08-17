@@ -1,0 +1,10 @@
+Skill name: {{skill_name}}
+
+Compile the following raw skill into a scheduling DAG.
+The execution agent will still receive the full skill text as policy background,
+so goal_entering_prompt should focus on the current goal boundary and task focus.
+
+Raw SKILL.md:
+```markdown
+{{skill_text}}
+```

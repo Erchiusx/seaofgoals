@@ -26,10 +26,26 @@ if [ ! -d "$experiment_dir" ]; then
   exit 2
 fi
 
-if [ ! -f "$experiment_dir/workflow.json" ]; then
+if [ "${SOG_DISABLE_WORKFLOW:-0}" != "1" ] && [ ! -f "$experiment_dir/workflow.json" ]; then
   echo "missing workflow spec: $experiment_dir/workflow.json" >&2
   echo "run 'make build-workflows' from the repository root first." >&2
   exit 2
+fi
+
+skill_env_name="$(printf '%s_SKILL' "$experiment_name" | tr '[:lower:]-' '[:upper:]_')"
+default_skill_path="/home/erchius/datasets/SSL/docs/testsets/$experiment_name/SKILL.md"
+skill_path="${!skill_env_name:-$default_skill_path}"
+if [ ! -f "$skill_path" ]; then
+  echo "missing skill source: $skill_path" >&2
+  exit 2
+fi
+export SOG_SKILL_TEXT
+SOG_SKILL_TEXT="$(<"$skill_path")"
+
+workflow_suffix=""
+if [ "${SOG_DISABLE_WORKFLOW:-0}" = "1" ]; then
+  export SOG_WORKFLOW_SPEC=""
+  workflow_suffix="--no-scfg"
 fi
 
 if [ -z "${OPENAI_API_KEY:-}" ] && [ -f "$HOME/.secrets/openai" ]; then
@@ -52,7 +68,7 @@ export SOG_RUNNER_GID="${SOG_RUNNER_GID:-$(id -g)}"
 runs_dir="$experiment_dir/runs"
 workspaces_dir="$runs_dir/workspaces"
 run_timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-run_id="${SOG_RUN_ID:-$(new_uuid)--$run_timestamp--$experiment_name}"
+run_id="${SOG_RUN_ID:-$(new_uuid)--$run_timestamp--$experiment_name$workflow_suffix}"
 workspace_dir="$workspaces_dir/$run_id"
 
 mkdir -p "$workspaces_dir"

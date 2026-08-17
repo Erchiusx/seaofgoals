@@ -1,7 +1,5 @@
 You are testing the database-migrations skill.
 
-Read /skill/SKILL.md first and follow it as the task guide.
-
 Task:
 Review and fix the migration files in /workspace so they follow safe PostgreSQL migration practices.
 

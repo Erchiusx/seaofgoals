@@ -1,13 +1,20 @@
 SKILL_EXPERIMENT ?=
+SKILL_NAME ?= skill
+SKILL_PATH ?=
+COMPILED_GOALS_OUT ?= compiled-goals.json
 SCFG_PYTHON ?= /home/erchius/development/scfg/scfg-package/.venv/bin/python
 
-.PHONY: lint test build-workflows experiment experiment-nextjs-performance experiment-database-migrations experiment-mysql2postgres experiment-test-with-postgres experiment-docker-development experiments view-trace
+.PHONY: lint test compile-skill build-workflows experiment experiment-no-scfg experiment-nextjs-performance experiment-database-migrations experiment-mysql2postgres experiment-test-with-postgres experiment-docker-development experiments experiments-no-scfg view-trace
 
 lint:
-	fourmolu --config ./fourmolu.yaml -i lib/ test/ test-suite/agent-runner/
+	fourmolu --config ./fourmolu.yaml -i lib/ test/ test-suite/agent-runner/ compiler/
 
 test:
 	cabal test
+
+compile-skill:
+	test -n "$(SKILL_PATH)"
+	cabal run exe:SeaOfGoals-compiler -- "$(SKILL_PATH)" "$(COMPILED_GOALS_OUT)" "$(SKILL_NAME)"
 
 build-workflows:
 	$(SCFG_PYTHON) test-suite/skill-experiments/build-workflows.py
@@ -15,6 +22,10 @@ build-workflows:
 experiment:
 	test -n "$(SKILL_EXPERIMENT)"
 	bash test-suite/skill-experiments/run-experiment.sh "$(SKILL_EXPERIMENT)"
+
+experiment-no-scfg:
+	test -n "$(SKILL_EXPERIMENT)"
+	SOG_DISABLE_WORKFLOW=1 SOG_MODEL=gpt-5.5 bash test-suite/skill-experiments/run-experiment.sh "$(SKILL_EXPERIMENT)"
 
 experiment-nextjs-performance:
 	bash test-suite/skill-experiments/run-experiment.sh nextjs-performance
@@ -36,6 +47,12 @@ experiments:
 	$(MAKE) experiment-database-migrations
 	$(MAKE) experiment-mysql2postgres
 	$(MAKE) experiment-test-with-postgres
+
+experiments-no-scfg:
+	SOG_DISABLE_WORKFLOW=1 SOG_MODEL=gpt-5.5 $(MAKE) experiment-nextjs-performance
+	SOG_DISABLE_WORKFLOW=1 SOG_MODEL=gpt-5.5 $(MAKE) experiment-database-migrations
+	SOG_DISABLE_WORKFLOW=1 SOG_MODEL=gpt-5.5 $(MAKE) experiment-mysql2postgres
+	SOG_DISABLE_WORKFLOW=1 SOG_MODEL=gpt-5.5 $(MAKE) experiment-test-with-postgres
 
 view-trace:
 	test -n "$(SKILL_EXPERIMENT)"

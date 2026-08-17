@@ -1,0 +1,6 @@
+Full original SKILL.md is provided below as policy background.
+Use this text to guide the task.
+
+```markdown
+{{skill_text}}
+```

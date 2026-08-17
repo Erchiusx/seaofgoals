@@ -1,7 +1,5 @@
 You are testing the nextjs-performance skill.
 
-Read /skill/SKILL.md first and follow it as the task guide.
-
 Task:
 Review and fix the small Next.js-like fixture in /workspace so it satisfies the performance quick checks from the skill.
 

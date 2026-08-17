@@ -1,7 +1,5 @@
 You are testing the docker-development skill.
 
-Read /skill/SKILL.md first and follow it as the task guide.
-
 Task:
 Optimize and harden the container setup for the small Node.js app in /workspace.
 

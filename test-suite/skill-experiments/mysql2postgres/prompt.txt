@@ -1,7 +1,5 @@
 You are testing the mysql2postgres skill.
 
-Read /skill/SKILL.md first and follow it as the task guide.
-
 Task:
 Migrate the small Java/Spring/MyBatis fixture in /workspace from MySQL-oriented database code to PostgreSQL-oriented database code.
 
@@ -13,7 +11,6 @@ record_effect only records side effects; it does not edit files.
 Only call record_effect after write_file, a shell command, or database command has actually changed or validated the target file, database/schema, or artifact.
 Do not finish until all concrete fixture issues listed below have been handled and inspected.
 When searching the workspace, exclude sog-trace.jsonl and other generated trace/log files.
-Prefer a small number of coarse subgoals: inspect, update application config, update XML SQL, update Java namespace/classes, update migration SQL, validate.
 
 Focus on these concrete fixture issues:
 - application.yml uses jdbc:mysql and SELECT 1 FROM DUAL.

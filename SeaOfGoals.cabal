@@ -11,24 +11,28 @@ maintainer:         zeyue_jia@u.nus.edu
 category:           Agent
 build-type:         Simple
 extra-doc-files:    CHANGELOG.md
--- extra-source-files:
+extra-source-files:
+    lib/Agent/SeaOfGoals/Prompts/*.txt
 
 common warnings
     ghc-options: -Wall
     default-extensions:
         OverloadedStrings
         ScopedTypeVariables
+        TemplateHaskell
 
 library
     import:           warnings
     exposed-modules:
         Agent.LLM.Transport
         Agent.SeaOfGoals.Agentic
+        Agent.SeaOfGoals.Compiler
         Agent.SeaOfGoals.ExperimentRunner
         Agent.SeaOfGoals.Harness
         Agent.SeaOfGoals.LLM
         Agent.SeaOfGoals.LLM.Backends.GPT
         Agent.SeaOfGoals.LLM.Backends.Gemini
+        Agent.SeaOfGoals.PromptTemplate
         Agent.SeaOfGoals.Talks
         Agent.SeaOfGoals.Tools
         Agent.SeaOfGoals.Trace
@@ -48,9 +52,19 @@ library
         directory,
         filepath,
         process,
+        template-haskell,
         text,
         time
     hs-source-dirs:   lib
+    default-language: GHC2024
+
+executable SeaOfGoals-compiler
+    import:           warnings
+    main-is:          Main.hs
+    build-depends:
+        base ^>=4.21.0.0,
+        SeaOfGoals
+    hs-source-dirs:   compiler
     default-language: GHC2024
 
 test-suite SeaOfGoals-agent-runner

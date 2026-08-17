@@ -24,7 +24,9 @@ services:
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       SOG_TRACE_PATH: /workspace/sog-trace.jsonl
-      SOG_WORKFLOW_SPEC: /workflow.json
+      SOG_WORKFLOW_SPEC: ${SOG_WORKFLOW_SPEC-/workflow.json}
+      SOG_SKILL_TEXT: ${SOG_SKILL_TEXT}
+      SOG_MODEL: ${SOG_MODEL:-gpt-5.5}
       POSTGRES_TEST_DB: postgres://postgres:tmppass@postgres:5432/teststorj?sslmode=disable
       GOCACHE: /workspace/.cache/go-build
       LANG: C.UTF-8
@@ -35,7 +37,6 @@ services:
       - ./runs/current:/workspace
       - ./prompt.txt:/prompt.txt:ro
       - ./workflow.json:/workflow.json:ro
-      - ${TEST_WITH_POSTGRES_SKILL:-/home/erchius/datasets/SSL/docs/testsets/test-with-postgres/SKILL.md}:/skill/SKILL.md:ro
     working_dir: /workspace
     command: >
       bash -lc 'find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf {} + && cp -a /seed/. /workspace/ && SeaOfGoals "$$(cat /prompt.txt)"'

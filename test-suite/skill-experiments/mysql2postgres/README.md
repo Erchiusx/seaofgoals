@@ -7,7 +7,7 @@ The runner does not run Docker itself. It receives:
 - the built `SeaOfGoals` executable mounted read-only,
 - a small Java/Spring/MyBatis fixture mounted read-only at `/seed`,
 - a per-run copy mounted at `/workspace`,
-- the `mysql2postgres` skill text mounted at `/skill/SKILL.md`,
+- the `mysql2postgres` skill text injected into the harness system prompt,
 - PostgreSQL exposed as the Compose service `postgres`.
 
 ## Build The Harness

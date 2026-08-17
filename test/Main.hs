@@ -3,6 +3,11 @@ module Main (main) where
 import Agent.LLM.Transport
   ( TransportResponse (..)
   )
+import Agent.SeaOfGoals.Compiler
+  ( CompiledGoal (..)
+  , CompiledGoalGraph (..)
+  , validateCompiledGoalGraph
+  )
 import Agent.SeaOfGoals.Harness
   ( HarnessConfig (..)
   , HarnessState (..)
@@ -59,6 +64,7 @@ import System.Exit (exitFailure)
 main :: IO ()
 main = do
   unicodeTransportResponseBodyTest
+  compilerGraphValidationTest
   eventsRef <- newIORef []
   provider <- newFakeProvider fakeResponses
   finalState <-
@@ -116,6 +122,19 @@ unicodeTransportResponseBodyTest = do
     (Right payload)
     (eitherDecode (transportResponseBody response) :: Either String Value)
 
+compilerGraphValidationTest :: IO ()
+compilerGraphValidationTest = do
+  assertEqual
+    "valid compiler DAG"
+    []
+    (validateCompiledGoalGraph validCompilerGraph)
+  assertBool
+    "compiler DAG rejects unknown predecessor"
+    (not (null (validateCompiledGoalGraph unknownPredecessorCompilerGraph)))
+  assertBool
+    "compiler DAG rejects cycle"
+    (not (null (validateCompiledGoalGraph cyclicCompilerGraph)))
+
 requestTemplate :: LLMRequest
 requestTemplate =
   LLMRequest
@@ -149,6 +168,43 @@ testWorkflow =
             }
         ]
     , workflowEdges = []
+    }
+
+validCompilerGraph :: CompiledGoalGraph
+validCompilerGraph =
+  CompiledGoalGraph
+    { compiledSkill = "test"
+    , compiledGoals =
+        [ compilerGoal "G001" []
+        , compilerGoal "G002" ["G001"]
+        ]
+    }
+
+unknownPredecessorCompilerGraph :: CompiledGoalGraph
+unknownPredecessorCompilerGraph =
+  CompiledGoalGraph
+    { compiledSkill = "test"
+    , compiledGoals = [compilerGoal "G001" ["missing"]]
+    }
+
+cyclicCompilerGraph :: CompiledGoalGraph
+cyclicCompilerGraph =
+  CompiledGoalGraph
+    { compiledSkill = "test"
+    , compiledGoals =
+        [ compilerGoal "G001" ["G002"]
+        , compilerGoal "G002" ["G001"]
+        ]
+    }
+
+compilerGoal :: Text -> [Text] -> CompiledGoal
+compilerGoal goalId predecessors =
+  CompiledGoal
+    { compiledGoalId = goalId
+    , compiledGoalName = "goal"
+    , compiledGoalDescription = "description"
+    , compiledGoalPredecessors = predecessors
+    , compiledGoalEnteringPrompt = "enter"
     }
 
 beginSubgoalTool :: ToolSpec
