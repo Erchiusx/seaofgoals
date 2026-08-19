@@ -4,10 +4,10 @@ SKILL_PATH ?=
 COMPILED_GOALS_OUT ?= compiled-goals.json
 SCFG_PYTHON ?= /home/erchius/development/scfg/scfg-package/.venv/bin/python
 
-.PHONY: lint test compile-skill build-workflows experiment experiment-no-scfg experiment-nextjs-performance experiment-database-migrations experiment-mysql2postgres experiment-test-with-postgres experiment-docker-development experiments experiments-no-scfg view-trace
+.PHONY: lint test compile-skill build-workflows smoke-containerd smoke-bwrap experiment experiment-no-scfg experiment-nextjs-performance experiment-database-migrations experiment-mysql2postgres experiment-test-with-postgres experiment-docker-development experiments experiments-no-scfg view-trace
 
 lint:
-	fourmolu --config ./fourmolu.yaml -i lib/ test/ test-suite/agent-runner/ compiler/
+	fourmolu --config ./fourmolu.yaml -i lib/ test/ test-suite/agent-runner/ compiler/ smoke/ test-fuse/
 
 test:
 	cabal test
@@ -18,6 +18,12 @@ compile-skill:
 
 build-workflows:
 	$(SCFG_PYTHON) test-suite/skill-experiments/build-workflows.py
+
+smoke-containerd:
+	cabal run exe:SeaOfGoals-containerd-smoke
+
+smoke-bwrap:
+	cabal run exe:SeaOfGoals-bwrap-smoke
 
 experiment:
 	test -n "$(SKILL_EXPERIMENT)"

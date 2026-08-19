@@ -25,6 +25,8 @@ import Network.HTTP.Client
   , responseBody
   , responseHeaders
   , responseStatus
+  , responseTimeout
+  , responseTimeoutNone
   )
 import Network.HTTP.Client qualified as HTTP
 import Network.HTTP.Client.TLS (tlsManagerSettings)
@@ -99,6 +101,7 @@ withTransportRequest baseRequest transportRequest =
           )
     , requestBody =
         maybe mempty (RequestBodyLBS . encode) (transportBody transportRequest)
+    , responseTimeout = responseTimeoutNone
     }
 
 encodeHeaders

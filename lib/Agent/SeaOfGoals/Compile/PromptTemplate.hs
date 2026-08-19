@@ -1,4 +1,4 @@
-module Agent.SeaOfGoals.PromptTemplate
+module Agent.SeaOfGoals.Compile.PromptTemplate
   ( embedTextFile
   )
 where

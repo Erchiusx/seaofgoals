@@ -1,4 +1,4 @@
-module Agent.SeaOfGoals.Compiler
+module Agent.SeaOfGoals.Compile.Compiler
   ( CompiledGoal (..)
   , CompiledGoalGraph (..)
   , compileSkill
@@ -7,6 +7,7 @@ module Agent.SeaOfGoals.Compiler
   )
 where
 
+import Agent.SeaOfGoals.Compile.PromptTemplate (embedTextFile)
 import Agent.SeaOfGoals.LLM
   ( LLMContentPart (TextPart)
   , LLMInputItem (MessageInput)
@@ -21,7 +22,6 @@ import Agent.SeaOfGoals.LLM.Backends.GPT
   ( GPTBackend (..)
   , defaultGPTEndpoint
   )
-import Agent.SeaOfGoals.PromptTemplate (embedTextFile)
 import Data.Aeson
   ( FromJSON (..)
   , ToJSON (..)

@@ -14,28 +14,49 @@ extra-doc-files:    CHANGELOG.md
 extra-source-files:
     lib/Agent/SeaOfGoals/Prompts/*.txt
 
+flag fuse
+    description: Build the libfuse3 workspace mount backend.
+    default:     False
+    manual:      True
+
 common warnings
     ghc-options: -Wall
     default-extensions:
         OverloadedStrings
         ScopedTypeVariables
         TemplateHaskell
+        TypeFamilies
 
 library
     import:           warnings
     exposed-modules:
         Agent.LLM.Transport
-        Agent.SeaOfGoals.Agentic
-        Agent.SeaOfGoals.Compiler
+        Agent.SeaOfGoals.Compile.Compiler
+        Agent.SeaOfGoals.Compile.PromptTemplate
         Agent.SeaOfGoals.ExperimentRunner
         Agent.SeaOfGoals.Harness
         Agent.SeaOfGoals.LLM
         Agent.SeaOfGoals.LLM.Backends.GPT
         Agent.SeaOfGoals.LLM.Backends.Gemini
-        Agent.SeaOfGoals.PromptTemplate
+        Agent.SeaOfGoals.Scheduling.Agentic
+        Agent.SeaOfGoals.Scheduling.MergeScheduler
         Agent.SeaOfGoals.Talks
         Agent.SeaOfGoals.Tools
         Agent.SeaOfGoals.Trace
+        Agent.SeaOfGoals.Workspace.Bwrap.Command
+        Agent.SeaOfGoals.Workspace.Bwrap.Profile
+        Agent.SeaOfGoals.Workspace.Containerd.Command
+        Agent.SeaOfGoals.Workspace.Backend
+        Agent.SeaOfGoals.Workspace.Effects
+        Agent.SeaOfGoals.Workspace.Fuse.Merge
+        Agent.SeaOfGoals.Workspace.Fuse.Store
+        Agent.SeaOfGoals.Workspace.ProcessExec
+        Agent.SeaOfGoals.Workspace.Sandbox.Bwrap
+        Agent.SeaOfGoals.Workspace.Sandbox.Containerd
+        Agent.SeaOfGoals.Workspace.Sandbox.Process
+        Agent.SeaOfGoals.Workspace.Sandbox
+        Agent.SeaOfGoals.Workspace.ToolRunner.Sandboxed
+        Agent.SeaOfGoals.Workspace.ToolRunner
         Agent.SeaOfGoals.Workflow
     -- other-modules:
     -- other-extensions:
@@ -54,7 +75,13 @@ library
         process,
         template-haskell,
         text,
-        time
+        time,
+        unix
+    if flag(fuse)
+        exposed-modules:
+            Agent.SeaOfGoals.Workspace.Fuse.Mount
+        build-depends:
+            libfuse3 >=0.2 && <0.3
     hs-source-dirs:   lib
     default-language: GHC2024
 
@@ -66,6 +93,50 @@ executable SeaOfGoals-compiler
         SeaOfGoals
     hs-source-dirs:   compiler
     default-language: GHC2024
+
+executable SeaOfGoals-fuse-mount-smoke
+    import:           warnings
+    main-is:          Main.hs
+    hs-source-dirs:   smoke/fuse-mount
+    default-language: GHC2024
+    ghc-options:      -threaded
+    if !flag(fuse)
+        buildable: False
+    else
+        build-depends:
+            base ^>=4.21.0.0,
+            bytestring,
+            directory,
+            filepath,
+            process,
+            SeaOfGoals,
+            unix
+
+executable SeaOfGoals-containerd-smoke
+    import:           warnings
+    main-is:          Main.hs
+    hs-source-dirs:   smoke/containerd
+    default-language: GHC2024
+    build-depends:
+        base ^>=4.21.0.0,
+        bytestring,
+        directory,
+        filepath,
+        SeaOfGoals,
+        text
+
+executable SeaOfGoals-bwrap-smoke
+    import:           warnings
+    main-is:          Main.hs
+    hs-source-dirs:   smoke/bwrap
+    default-language: GHC2024
+    build-depends:
+        base ^>=4.21.0.0,
+        bytestring,
+        directory,
+        filepath,
+        SeaOfGoals,
+        text
 
 test-suite SeaOfGoals-agent-runner
     import:           warnings
@@ -89,6 +160,27 @@ test-suite SeaOfGoals-test
         aeson,
         aeson-qq,
         base ^>=4.21.0.0,
+        bytestring,
         containers,
+        directory,
+        filepath,
         SeaOfGoals,
         text
+
+test-suite SeaOfGoals-fuse-test
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    main-is:          Main.hs
+    hs-source-dirs:   test-fuse
+    default-language: GHC2024
+    ghc-options:      -threaded
+    if !flag(fuse)
+        buildable: False
+    else
+        build-depends:
+            base ^>=4.21.0.0,
+            bytestring,
+            directory,
+            filepath,
+            libfuse3,
+            SeaOfGoals

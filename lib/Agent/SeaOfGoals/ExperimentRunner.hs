@@ -8,6 +8,7 @@ module Agent.SeaOfGoals.ExperimentRunner
   )
 where
 
+import Agent.SeaOfGoals.Compile.PromptTemplate (embedTextFile)
 import Agent.SeaOfGoals.Harness
   ( HarnessConfig (..)
   , runHarness
@@ -23,7 +24,6 @@ import Agent.SeaOfGoals.LLM.Backends.GPT
   ( GPTBackend (..)
   , defaultGPTEndpoint
   )
-import Agent.SeaOfGoals.PromptTemplate (embedTextFile)
 import Agent.SeaOfGoals.Tools
   ( ToolSpec
   , objectToolSpec
