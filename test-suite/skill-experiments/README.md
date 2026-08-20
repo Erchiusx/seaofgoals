@@ -27,6 +27,11 @@ inside the runner environment.
 
 The runner sources `$HOME/.secrets/openai` automatically when `OPENAI_API_KEY` is not already set.
 
+Set `SOG_SANDBOX=bwrap` to run the harness `shell` tool inside a bwrap view.
+The model still runs through the host harness process, but shell commands see
+the current run workspace at `/workspace`, with cache/home/tmp writes redirected
+under `/workspace/.sog/bwrap/`.
+
 Set `SOG_WORKFLOW_SPEC=/path/to/workflow.json` to make the runner follow a static CFG exported from an SCFG-style analysis. The JSON shape is intentionally small:
 
 ```json

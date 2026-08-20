@@ -50,6 +50,7 @@ library
         Agent.SeaOfGoals.Trace
         Agent.SeaOfGoals.Workspace.Bwrap.Command
         Agent.SeaOfGoals.Workspace.Bwrap.Profile
+        Agent.SeaOfGoals.Workspace.Bwrap.ToolBinding
         Agent.SeaOfGoals.Workspace.Containerd.Command
         Agent.SeaOfGoals.Workspace.Backend
         Agent.SeaOfGoals.Workspace.Effects

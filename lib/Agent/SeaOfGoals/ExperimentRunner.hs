@@ -60,6 +60,19 @@ import Agent.SeaOfGoals.Workflow
   , workflowFailedNodes
   , workflowSkippedNodes
   )
+import Agent.SeaOfGoals.Workspace.Bwrap.Command qualified as BwrapCommand
+import Agent.SeaOfGoals.Workspace.Bwrap.Profile qualified as BwrapProfile
+import Agent.SeaOfGoals.Workspace.Bwrap.ToolBinding
+  ( BwrapToolBinding (..)
+  , bwrapShellTool
+  )
+import Agent.SeaOfGoals.Workspace.Sandbox
+  ( SandboxRunner (..)
+  )
+import Agent.SeaOfGoals.Workspace.Sandbox.Bwrap
+  ( BwrapSandboxRunner (..)
+  , BwrapSandboxSpec (..)
+  )
 import Data.Aeson
   ( FromJSON (..)
   , Value
@@ -118,6 +131,7 @@ data ExperimentContext = ExperimentContext
   , experimentTracePath :: FilePath
   , experimentSystemPromptText :: Text
   , experimentUserPromptText :: Text
+  , experimentToolsForRun :: [ToolSpec]
   , experimentWorkflowSpec :: Maybe WorkflowSpec
   }
 
@@ -156,6 +170,7 @@ loadExperimentContext apiKey prompt = do
   tracePath <- fromMaybe "sog-trace.jsonl" <$> lookupEnv "SOG_TRACE_PATH"
   model <- Text.pack . fromMaybe "gpt-5.5" <$> lookupEnv "SOG_MODEL"
   workflowSpec <- loadWorkflowSpecFromEnv
+  tools <- loadExperimentTools
   skillContext <- loadSkillContextFromEnv
   createDirectoryIfMissing True (takeDirectory tracePath)
   let
@@ -190,6 +205,7 @@ loadExperimentContext apiKey prompt = do
       , experimentTracePath = tracePath
       , experimentSystemPromptText = systemPrompt
       , experimentUserPromptText = prompt
+      , experimentToolsForRun = tools
       , experimentWorkflowSpec = workflowSpec
       }
 
@@ -202,7 +218,7 @@ runSinglePrompt context = do
         , harnessRequestTemplate = experimentRequestTemplate context
         , harnessSystemPrompt = experimentSystemPromptText context
         , harnessUserPrompt = experimentUserPromptText context
-        , harnessTools = experimentTools
+        , harnessTools = experimentToolsForRun context
         , harnessMaxTurns = 64
         , harnessEventSink = appendEvent (experimentTracePath context)
         , harnessWorkflowSpec = experimentWorkflowSpec context
@@ -284,7 +300,7 @@ runSerialGoal context goalGraph summaries node = do
         , harnessRequestTemplate = experimentRequestTemplate context
         , harnessSystemPrompt = experimentSystemPromptText context
         , harnessUserPrompt = prompt
-        , harnessTools = experimentTools
+        , harnessTools = experimentToolsForRun context
         , harnessMaxTurns = 32
         , harnessEventSink = appendEvent (experimentTracePath context)
         , harnessWorkflowSpec = experimentWorkflowSpec context
@@ -428,12 +444,65 @@ experimentSystemPrompt =
 
 experimentTools :: [ToolSpec]
 experimentTools =
+  experimentToolsWithShell shellTool
+
+experimentToolsWithShell :: ToolSpec -> [ToolSpec]
+experimentToolsWithShell shellToolSpec =
   [ beginSubgoalTool
   , endSubgoalTool
   , recordEffectTool
   , writeFileTool
-  , shellTool
+  , shellToolSpec
   ]
+
+loadExperimentTools :: IO [ToolSpec]
+loadExperimentTools = do
+  maybeSandbox <- lookupEnv "SOG_SANDBOX"
+  maybeBwrap <- lookupEnv "SOG_BWRAP"
+  case (maybeSandbox, maybeBwrap) of
+    (Just "bwrap", _) ->
+      loadBwrapExperimentTools (fromMaybe "bwrap" maybeBwrap)
+    (_, Just binary)
+      | not (null binary) ->
+          loadBwrapExperimentTools binary
+    _ ->
+      pure experimentTools
+
+loadBwrapExperimentTools :: FilePath -> IO [ToolSpec]
+loadBwrapExperimentTools binary = do
+  workspaceRoot <- normalise <$> getCurrentDirectory
+  let
+    bwrapRoot = workspaceRoot </> ".sog" </> "bwrap"
+    cacheRoot = bwrapRoot </> "cache"
+    homeRoot = bwrapRoot </> "home"
+    tmpRoot = bwrapRoot </> "tmp"
+  mapM_ (createDirectoryIfMissing True) [cacheRoot, homeRoot, tmpRoot]
+  let
+    runner = BwrapSandboxRunner (BwrapCommand.Config binary)
+    view =
+      BwrapProfile.demoWorkspaceOnlyView
+        BwrapProfile.DemoPaths
+          { BwrapProfile.demoWorkspaceHostPath = workspaceRoot
+          , BwrapProfile.demoCacheHostPath = cacheRoot
+          , BwrapProfile.demoHomeHostPath = homeRoot
+          , BwrapProfile.demoTmpHostPath = tmpRoot
+          }
+  handle <-
+    createSandbox
+      runner
+      BwrapSandboxSpec
+        { bwrapSandboxId = "experiment-bwrap"
+        , bwrapSandboxView = view
+        }
+  pure
+    ( experimentToolsWithShell
+        ( bwrapShellTool
+            BwrapToolBinding
+              { bwrapToolRunner = runner
+              , bwrapToolHandle = handle
+              }
+        )
+    )
 
 beginSubgoalTool :: ToolSpec
 beginSubgoalTool =
@@ -551,22 +620,29 @@ writeFileTool =
 
 resolveWorkspaceWritePath :: Text -> IO (Either Text FilePath)
 resolveWorkspaceWritePath requestedPath = do
-  currentDirectory <- normalise <$> getCurrentDirectory
+  workspaceRoot <- normalise <$> getCurrentDirectory
   let
     rawPath = Text.unpack requestedPath
+    workspaceAgentPrefix = "/workspace/" :: String
     absolutePath =
       normalise $
-        if isAbsolute rawPath
-          then rawPath
-          else currentDirectory </> rawPath
-    currentPrefix = addTrailingPathSeparator currentDirectory
+        if rawPath == "/workspace"
+          then workspaceRoot
+          else
+            if workspaceAgentPrefix `isPrefixOf` rawPath
+              then workspaceRoot </> drop (length workspaceAgentPrefix) rawPath
+              else
+                if isAbsolute rawPath
+                  then rawPath
+                  else workspaceRoot </> rawPath
+    workspacePrefix = addTrailingPathSeparator workspaceRoot
   pure $
-    if absolutePath == currentDirectory || currentPrefix `isPrefixOf` absolutePath
+    if absolutePath == workspaceRoot || workspacePrefix `isPrefixOf` absolutePath
       then Right absolutePath
       else
         Left
           ( "write_file path must stay under "
-              <> Text.pack currentDirectory
+              <> Text.pack workspaceRoot
               <> ": "
               <> requestedPath
           )
