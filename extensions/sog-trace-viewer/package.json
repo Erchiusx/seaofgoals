@@ -11,7 +11,8 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:sogTrace.openTrace"
+    "onCommand:sogTrace.openTrace",
+    "onCommand:sogTrace.openGoalColumns"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -19,6 +20,10 @@
       {
         "command": "sogTrace.openTrace",
         "title": "SeaOfGoals: Open Trace View"
+      },
+      {
+        "command": "sogTrace.openGoalColumns",
+        "title": "SeaOfGoals: Open Goal Timeline"
       }
     ],
     "menus": {
@@ -27,11 +32,21 @@
           "command": "sogTrace.openTrace",
           "when": "resourceFilename =~ /sog-trace\\.jsonl$/",
           "group": "navigation"
+        },
+        {
+          "command": "sogTrace.openGoalColumns",
+          "when": "resourceFilename =~ /sog-trace\\.jsonl$/",
+          "group": "navigation"
         }
       ],
       "editor/title/context": [
         {
           "command": "sogTrace.openTrace",
+          "when": "resourceFilename =~ /sog-trace\\.jsonl$/",
+          "group": "navigation"
+        },
+        {
+          "command": "sogTrace.openGoalColumns",
           "when": "resourceFilename =~ /sog-trace\\.jsonl$/",
           "group": "navigation"
         }

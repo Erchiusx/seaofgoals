@@ -13,6 +13,7 @@ build-type:         Simple
 extra-doc-files:    CHANGELOG.md
 extra-source-files:
     lib/Agent/SeaOfGoals/Prompts/*.txt
+    seaofgoals.config.json
 
 flag fuse
     description: Build the libfuse3 workspace mount backend.
@@ -31,6 +32,7 @@ library
     import:           warnings
     exposed-modules:
         Agent.LLM.Transport
+        Agent.SeaOfGoals.Config
         Agent.SeaOfGoals.Compile.Compiler
         Agent.SeaOfGoals.Compile.PromptTemplate
         Agent.SeaOfGoals.ExperimentRunner

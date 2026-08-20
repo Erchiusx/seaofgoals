@@ -19,13 +19,25 @@ Run from the repository root:
 ```bash
 make experiment-mysql2postgres
 make experiment-test-with-postgres
+make experiment-concurrent SKILL_EXPERIMENT=nextjs-performance
 ```
+
+`make experiment-concurrent SKILL_EXPERIMENT=...` sets
+`SOG_SCHEDULER=concurrent`. In this mode, every ready goal runs in its own
+workspace copy under `.sog/concurrent/goals/`; accepted results are merged back
+into the run workspace. The current merge baseline detects file write/write
+conflicts and replans the serially later goal. It does not yet detect read/write
+conflicts from shell-level read tracing.
 
 `docker-development` is kept as a fixture candidate but is not part of the
 current test set, because it would require reasoning about Docker access from
 inside the runner environment.
 
 The runner sources `$HOME/.secrets/openai` automatically when `OPENAI_API_KEY` is not already set.
+
+SeaOfGoals loads `seaofgoals.config.json` from the current directory by
+default. Set `SOG_CONFIG=/path/to/config.json` to use another config file. The
+current default concurrent chase parallelism is 4.
 
 Set `SOG_SANDBOX=bwrap` to run the harness `shell` tool inside a bwrap view.
 The model still runs through the host harness process, but shell commands see

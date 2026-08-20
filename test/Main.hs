@@ -8,6 +8,12 @@ import Agent.SeaOfGoals.Compile.Compiler
   , CompiledGoalGraph (..)
   , validateCompiledGoalGraph
   )
+import Agent.SeaOfGoals.Config
+  ( ConcurrentChaseConfig (..)
+  , Config (..)
+  , defaultConfig
+  , loadConfigFile
+  )
 import Agent.SeaOfGoals.Harness
   ( HarnessConfig (..)
   , HarnessState (..)
@@ -167,6 +173,7 @@ import System.FilePath ((</>))
 main :: IO ()
 main = do
   unicodeTransportResponseBodyTest
+  configFileTest
   compilerGraphValidationTest
   bwrapCommandRenderingTest
   containerdCommandRenderingTest
@@ -237,6 +244,37 @@ unicodeTransportResponseBodyTest = do
     "transport response body keeps UTF-8 JSON bytes"
     (Right payload)
     (eitherDecode (transportResponseBody response) :: Either String Value)
+
+configFileTest :: IO ()
+configFileTest = do
+  assertEqual
+    "default concurrent chase parallelism is four"
+    4
+    ( concurrentChaseConfigMaxParallelism
+        (configConcurrentChase defaultConfig)
+    )
+  tempRoot <- getTemporaryDirectory
+  let
+    configRoot = tempRoot </> "sog-config-test"
+    configPath = configRoot </> "seaofgoals.config.json"
+  removePathForcibly configRoot
+  createDirectoryIfMissing True configRoot
+  ByteString.writeFile
+    configPath
+    "{ \"concurrentChase\": { \"maxParallelism\": 4, \"maxReplans\": 7 } }"
+  loaded <- loadConfigFile configPath
+  assertEqual
+    "config file controls concurrent chase parallelism"
+    4
+    ( concurrentChaseConfigMaxParallelism
+        (configConcurrentChase loaded)
+    )
+  assertEqual
+    "config file controls concurrent chase max replans"
+    7
+    ( concurrentChaseConfigMaxReplans
+        (configConcurrentChase loaded)
+    )
 
 compilerGraphValidationTest :: IO ()
 compilerGraphValidationTest = do
@@ -1039,6 +1077,7 @@ concurrentChaseSchedulerTest = do
   mergedRef <- newIORef []
   conflictRef <- newIORef False
   let
+    chaseConfig = configConcurrentChase defaultConfig
     graph =
       GoalGraph
         { goalGraphNodes =
@@ -1054,8 +1093,10 @@ concurrentChaseSchedulerTest = do
         }
     runner =
       ConcurrentChaseRunner
-        { concurrentChaseMaxParallelism = 2
-        , concurrentChaseMaxReplans = 4
+        { concurrentChaseMaxParallelism =
+            concurrentChaseConfigMaxParallelism chaseConfig
+        , concurrentChaseMaxReplans =
+            concurrentChaseConfigMaxReplans chaseConfig
         , concurrentChaseRunGoal = \node -> do
             modifyIORef'
               runCountsRef

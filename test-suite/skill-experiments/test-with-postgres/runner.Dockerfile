@@ -6,6 +6,7 @@ RUN ln -s /usr/local/go/bin/go /usr/local/bin/go \
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash \
+    bubblewrap \
     ca-certificates \
     coreutils \
     findutils \

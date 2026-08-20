@@ -13,6 +13,12 @@ import Agent.SeaOfGoals.Compile.Compiler
   , validateCompiledGoalGraph
   )
 import Agent.SeaOfGoals.Compile.PromptTemplate (embedTextFile)
+import Agent.SeaOfGoals.Config
+  ( ConcurrentChaseConfig (..)
+  , Config
+  , configConcurrentChase
+  , loadConfigFromEnv
+  )
 import Agent.SeaOfGoals.Harness
   ( HarnessConfig (..)
   , HarnessState (..)
@@ -38,6 +44,12 @@ import Agent.SeaOfGoals.Scheduling.Agentic
   )
 import Agent.SeaOfGoals.Scheduling.Compiled
   ( compiledGraphToGoalGraph
+  )
+import Agent.SeaOfGoals.Scheduling.ConcurrentChase
+  ( ConcurrentChaseConflict (..)
+  , ConcurrentChaseResult (..)
+  , ConcurrentChaseRunner (..)
+  , runConcurrentChase
   )
 import Agent.SeaOfGoals.Scheduling.SerialScheduler
   ( SerialScheduler (..)
@@ -73,6 +85,18 @@ import Agent.SeaOfGoals.Workspace.Sandbox.Bwrap
   ( BwrapSandboxRunner (..)
   , BwrapSandboxSpec (..)
   )
+import Control.Concurrent.MVar
+  ( MVar
+  , modifyMVar_
+  , newMVar
+  )
+import Control.Monad
+  ( filterM
+  , forM
+  , forM_
+  , unless
+  , when
+  )
 import Data.Aeson
   ( FromJSON (..)
   , Value
@@ -84,12 +108,14 @@ import Data.Aeson
   , (.:?)
   , (.=)
   )
+import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.IORef
   ( IORef
   , modifyIORef'
   , newIORef
   , readIORef
+  , writeIORef
   )
 import Data.List (isPrefixOf)
 import Data.Map.Strict (Map)
@@ -105,7 +131,12 @@ import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import System.Directory
   ( createDirectoryIfMissing
+  , doesDirectoryExist
+  , doesFileExist
+  , doesPathExist
   , getCurrentDirectory
+  , listDirectory
+  , removePathForcibly
   )
 import System.Environment
   ( getArgs
@@ -117,12 +148,14 @@ import System.FilePath
   ( addTrailingPathSeparator
   , isAbsolute
   , normalise
+  , splitDirectories
   , takeDirectory
   , (</>)
   )
 import System.Process
-  ( readCreateProcessWithExitCode
-  , shell
+  ( cwd
+  , proc
+  , readCreateProcessWithExitCode
   )
 
 data ExperimentContext = ExperimentContext
@@ -131,7 +164,9 @@ data ExperimentContext = ExperimentContext
   , experimentTracePath :: FilePath
   , experimentSystemPromptText :: Text
   , experimentUserPromptText :: Text
+  , experimentConfig :: Config
   , experimentToolsForRun :: [ToolSpec]
+  , experimentEventSink :: HarnessEvent -> IO ()
   , experimentWorkflowSpec :: Maybe WorkflowSpec
   }
 
@@ -151,28 +186,39 @@ runPromptFromArgs = do
 runPrompt :: String -> Text -> IO ()
 runPrompt apiKey prompt = do
   context <- loadExperimentContext apiKey prompt
+  scheduler <- fromMaybe "serial" <$> lookupEnv "SOG_SCHEDULER"
   maybeSerialGoalsText <- lookupEnv "SOG_SERIAL_GOALS_TEXT"
   maybeSerialGoals <- lookupEnv "SOG_SERIAL_GOALS"
   case maybeSerialGoalsText of
     Just goalsText | not (null goalsText) -> do
       unsetEnv "SOG_SERIAL_GOALS_TEXT"
       compiledGraph <- parseCompiledGoalGraphText goalsText
-      runSerialPromptWithGraph context compiledGraph
+      runPromptWithGraph scheduler context compiledGraph
     _ ->
       case maybeSerialGoals of
         Just path | not (null path) -> do
           unsetEnv "SOG_SERIAL_GOALS"
-          loadCompiledGoalGraph path >>= runSerialPromptWithGraph context
+          loadCompiledGoalGraph path >>= runPromptWithGraph scheduler context
         _ -> runSinglePrompt context
+
+runPromptWithGraph :: String -> ExperimentContext -> CompiledGoalGraph -> IO ()
+runPromptWithGraph scheduler context graph =
+  case scheduler of
+    "concurrent" -> runConcurrentPromptWithGraph context graph
+    "serial" -> runSerialPromptWithGraph context graph
+    "" -> runSerialPromptWithGraph context graph
+    other -> fail ("unknown SOG_SCHEDULER: " <> other)
 
 loadExperimentContext :: String -> Text -> IO ExperimentContext
 loadExperimentContext apiKey prompt = do
   tracePath <- fromMaybe "sog-trace.jsonl" <$> lookupEnv "SOG_TRACE_PATH"
   model <- Text.pack . fromMaybe "gpt-5.5" <$> lookupEnv "SOG_MODEL"
+  config <- loadConfigFromEnv
   workflowSpec <- loadWorkflowSpecFromEnv
   tools <- loadExperimentTools
   skillContext <- loadSkillContextFromEnv
   createDirectoryIfMissing True (takeDirectory tracePath)
+  traceLock <- newMVar ()
   let
     backend =
       GPTBackend
@@ -205,7 +251,9 @@ loadExperimentContext apiKey prompt = do
       , experimentTracePath = tracePath
       , experimentSystemPromptText = systemPrompt
       , experimentUserPromptText = prompt
+      , experimentConfig = config
       , experimentToolsForRun = tools
+      , experimentEventSink = lockedAppendEvent traceLock tracePath
       , experimentWorkflowSpec = workflowSpec
       }
 
@@ -220,7 +268,7 @@ runSinglePrompt context = do
         , harnessUserPrompt = experimentUserPromptText context
         , harnessTools = experimentToolsForRun context
         , harnessMaxTurns = 64
-        , harnessEventSink = appendEvent (experimentTracePath context)
+        , harnessEventSink = experimentEventSink context
         , harnessWorkflowSpec = experimentWorkflowSpec context
         }
   putStrLn ("Trace written to " <> experimentTracePath context)
@@ -248,6 +296,60 @@ runSerialPromptWithGraph context compiledGraph = do
               )
         )
       putStrLn ("Trace written to " <> experimentTracePath context)
+
+runConcurrentPromptWithGraph :: ExperimentContext -> CompiledGoalGraph -> IO ()
+runConcurrentPromptWithGraph context compiledGraph = do
+  requireConcurrentWorkspaceRemap
+  let
+    goalGraph = compiledGraphToGoalGraph compiledGraph
+    chaseConfig = configConcurrentChase (experimentConfig context)
+  workspaceRoot <- normalise <$> getCurrentDirectory
+  summariesRef <- newSummaries
+  runsRef <- newIORef Map.empty
+  acceptedWritesRef <- newIORef Map.empty
+  result <-
+    runConcurrentChase
+      ConcurrentChaseRunner
+        { concurrentChaseMaxParallelism =
+            concurrentChaseConfigMaxParallelism chaseConfig
+        , concurrentChaseMaxReplans =
+            concurrentChaseConfigMaxReplans chaseConfig
+        , concurrentChaseRunGoal =
+            runConcurrentGoal
+              context
+              goalGraph
+              workspaceRoot
+              summariesRef
+              runsRef
+        , concurrentChaseMergeGoal =
+            mergeConcurrentGoal
+              context
+              workspaceRoot
+              summariesRef
+              acceptedWritesRef
+        }
+      goalGraph
+  case result of
+    Left err -> fail ("concurrent scheduler failed: " <> Text.unpack err)
+    Right schedulerResult -> do
+      putStrLn
+        ( "Concurrent goals completed: "
+            <> show
+              ( fmap
+                  (Text.unpack . unGoalNodeId)
+                  (Map.keys (concurrentChaseCompleted schedulerResult))
+              )
+        )
+      putStrLn ("Trace written to " <> experimentTracePath context)
+
+requireConcurrentWorkspaceRemap :: IO ()
+requireConcurrentWorkspaceRemap = do
+  maybeSandbox <- lookupEnv "SOG_SANDBOX"
+  maybeBwrap <- lookupEnv "SOG_BWRAP"
+  let hasBwrap = maybeSandbox == Just "bwrap" || maybe False (not . null) maybeBwrap
+  unless hasBwrap $
+    fail
+      "concurrent scheduler requires SOG_SANDBOX=bwrap or SOG_BWRAP so each goal workspace can be remapped to /workspace"
 
 loadCompiledGoalGraph :: FilePath -> IO CompiledGoalGraph
 loadCompiledGoalGraph path = do
@@ -330,6 +432,262 @@ runSerialGoal context goalGraph summaries node = do
                 <> status
             )
         )
+
+runConcurrentGoal
+  :: ExperimentContext
+  -> GoalGraph
+  -> FilePath
+  -> Summaries
+  -> IORef (Map GoalNodeId Int)
+  -> GoalNode
+  -> IO (Either Text AgentRunResult)
+runConcurrentGoal context goalGraph baseWorkspace summaries runsRef node = do
+  runIndex <- nextGoalRunIndex runsRef (goalNodeId node)
+  let
+    runSlug =
+      Text.unpack (unGoalNodeId (goalNodeId node))
+        <> "-"
+        <> show runIndex
+    taskWorkspace =
+      baseWorkspace
+        </> ".sog"
+        </> "concurrent"
+        </> "goals"
+        </> runSlug
+        </> "workspace"
+  resetDirectory taskWorkspace
+  copyWorkspaceTree baseWorkspace taskWorkspace
+  predecessorSummaries <-
+    summariesFor summaries (goalPredecessors goalGraph (goalNodeId node))
+  tools <- experimentToolsForWorkspace taskWorkspace
+  let prompt =
+        serialGoalPrompt
+          (experimentUserPromptText context)
+          predecessorSummaries
+          node
+  state <-
+    runHarness
+      HarnessConfig
+        { harnessProvider = experimentBackend context
+        , harnessRequestTemplate = experimentRequestTemplate context
+        , harnessSystemPrompt = experimentSystemPromptText context
+        , harnessUserPrompt = prompt
+        , harnessTools = tools
+        , harnessMaxTurns = 32
+        , harnessEventSink = experimentEventSink context
+        , harnessWorkflowSpec = experimentWorkflowSpec context
+        }
+  let status = serialGoalStatus node state
+  changedPaths <- workspaceChangedPaths baseWorkspace taskWorkspace
+  let
+    summary = serialGoalSummary node status
+    result =
+      AgentRunResult
+        { agentRunResultGoal = goalNodeId node
+        , agentRunResultStatus = status
+        , agentRunResultSummaryForDependents = summary
+        , agentRunResultReads = Set.empty
+        , agentRunResultWrites = Set.fromList changedPaths
+        , agentRunResultSnapshot =
+            SnapshotId
+              ( unGoalNodeId (goalNodeId node)
+                  <> ":"
+                  <> Text.pack taskWorkspace
+              )
+        }
+  if serialGoalStatusIsTerminal status
+    then pure (Right result)
+    else
+      pure
+        ( Left
+            ( "concurrent goal "
+                <> unGoalNodeId (goalNodeId node)
+                <> " did not complete successfully: "
+                <> status
+            )
+        )
+
+mergeConcurrentGoal
+  :: ExperimentContext
+  -> FilePath
+  -> Summaries
+  -> IORef (Map FilePath GoalNodeId)
+  -> AgentRunResult
+  -> IO (Either ConcurrentChaseConflict ())
+mergeConcurrentGoal context baseWorkspace summaries acceptedWritesRef result = do
+  acceptedWrites <- readIORef acceptedWritesRef
+  case firstWriteConflict acceptedWrites (agentRunResultWrites result) of
+    Just (path, formerGoal) -> do
+      experimentEventSink context $
+        EffectRecorded
+          EffectRecord
+            { effectKind = "merge_conflict"
+            , effectResource = Text.pack path
+            , effectDetail =
+                Just
+                  ( "former="
+                      <> unGoalNodeId formerGoal
+                      <> ", latter="
+                      <> unGoalNodeId (agentRunResultGoal result)
+                  )
+            }
+          Nothing
+      pure
+        ( Left
+            ConcurrentChaseConflict
+              { concurrentChaseConflictLeft = agentRunResultGoal result
+              , concurrentChaseConflictRight = formerGoal
+              , concurrentChaseConflictReason =
+                  "workspace write/write conflict on " <> Text.pack path
+              }
+        )
+    Nothing -> do
+      applyGoalWorkspace baseWorkspace result
+      rememberSummary
+        summaries
+        (agentRunResultGoal result)
+        (agentRunResultSummaryForDependents result)
+      modifyIORef'
+        acceptedWritesRef
+        ( \current ->
+            foldr
+              (`Map.insert` agentRunResultGoal result)
+              current
+              (Set.toList (agentRunResultWrites result))
+        )
+      rememberMergeAccepted context result
+      pure (Right ())
+
+firstWriteConflict
+  :: Map FilePath GoalNodeId -> Set FilePath -> Maybe (FilePath, GoalNodeId)
+firstWriteConflict acceptedWrites writes =
+  case [ (path, formerGoal)
+       | path <- Set.toList writes
+       , Just formerGoal <- [Map.lookup path acceptedWrites]
+       ] of
+    conflict : _ -> Just conflict
+    [] -> Nothing
+
+applyGoalWorkspace :: FilePath -> AgentRunResult -> IO ()
+applyGoalWorkspace baseWorkspace result = do
+  let taskWorkspace = snapshotWorkspacePath (agentRunResultSnapshot result)
+  forM_ (Set.toList (agentRunResultWrites result)) $ \relativePath -> do
+    let
+      source = taskWorkspace </> relativePath
+      target = baseWorkspace </> relativePath
+    sourceExists <- doesPathExist source
+    if sourceExists
+      then do
+        sourceIsDirectory <- doesDirectoryExist source
+        when sourceIsDirectory $
+          createDirectoryIfMissing True target
+        unless sourceIsDirectory $ do
+          createDirectoryIfMissing True (takeDirectory target)
+          ByteString.readFile source >>= ByteString.writeFile target
+      else do
+        targetExists <- doesPathExist target
+        when targetExists $ removePathForcibly target
+
+rememberMergeAccepted :: ExperimentContext -> AgentRunResult -> IO ()
+rememberMergeAccepted context result =
+  experimentEventSink context $
+    EffectRecorded
+      EffectRecord
+        { effectKind = "merge_accept"
+        , effectResource = unGoalNodeId (agentRunResultGoal result)
+        , effectDetail =
+            Just
+              ( "writes="
+                  <> Text.pack (show (Set.toList (agentRunResultWrites result)))
+              )
+        }
+      Nothing
+
+snapshotWorkspacePath :: SnapshotId -> FilePath
+snapshotWorkspacePath snapshotId =
+  case Text.splitOn ":" (unSnapshotId snapshotId) of
+    _goalId : pathParts -> Text.unpack (Text.intercalate ":" pathParts)
+    [] -> Text.unpack (unSnapshotId snapshotId)
+
+nextGoalRunIndex :: IORef (Map GoalNodeId Int) -> GoalNodeId -> IO Int
+nextGoalRunIndex runsRef goalId = do
+  runs <- readIORef runsRef
+  let next = Map.findWithDefault 0 goalId runs + 1
+  writeIORef runsRef (Map.insert goalId next runs)
+  pure next
+
+resetDirectory :: FilePath -> IO ()
+resetDirectory path = do
+  exists <- doesPathExist path
+  when exists (removePathForcibly path)
+  createDirectoryIfMissing True path
+
+copyWorkspaceTree :: FilePath -> FilePath -> IO ()
+copyWorkspaceTree sourceRoot targetRoot = do
+  files <- listWorkspaceFiles sourceRoot
+  forM_ files $ \relativePath -> do
+    let
+      source = sourceRoot </> relativePath
+      target = targetRoot </> relativePath
+    createDirectoryIfMissing True (takeDirectory target)
+    ByteString.readFile source >>= ByteString.writeFile target
+
+workspaceChangedPaths :: FilePath -> FilePath -> IO [FilePath]
+workspaceChangedPaths baseRoot taskRoot = do
+  baseFiles <- Set.fromList <$> listWorkspaceFiles baseRoot
+  taskFiles <- Set.fromList <$> listWorkspaceFiles taskRoot
+  filterM changed (Set.toList (Set.union baseFiles taskFiles))
+ where
+  changed relativePath = do
+    let
+      basePath = baseRoot </> relativePath
+      taskPath = taskRoot </> relativePath
+    baseExists <- doesFileExist basePath
+    taskExists <- doesFileExist taskPath
+    case (baseExists, taskExists) of
+      (False, False) -> pure False
+      (True, False) -> pure True
+      (False, True) -> pure True
+      (True, True) -> (/=) <$> ByteString.readFile basePath <*> ByteString.readFile taskPath
+
+listWorkspaceFiles :: FilePath -> IO [FilePath]
+listWorkspaceFiles root = go ""
+ where
+  go relativeDir = do
+    let absoluteDir = root </> relativeDir
+    exists <- doesDirectoryExist absoluteDir
+    if not exists
+      then pure []
+      else do
+        names <- listDirectory absoluteDir
+        fmap concat $
+          forM (filter (not . isIgnoredWorkspaceEntry relativeDir) names) $ \name -> do
+            let
+              relativePath =
+                if null relativeDir
+                  then name
+                  else relativeDir </> name
+              absolutePath = root </> relativePath
+            isDirectory <- doesDirectoryExist absolutePath
+            if isDirectory
+              then go relativePath
+              else do
+                isFile <- doesFileExist absolutePath
+                pure [relativePath | isFile]
+
+isIgnoredWorkspaceEntry :: FilePath -> FilePath -> Bool
+isIgnoredWorkspaceEntry relativeDir name =
+  null relativeDir
+    && ( name == ".sog"
+           || name == "sog-trace.jsonl"
+       )
+    || any (== ".sog") (splitDirectories (relativeDir </> name))
+
+lockedAppendEvent :: MVar () -> FilePath -> HarnessEvent -> IO ()
+lockedAppendEvent lock path event =
+  modifyMVar_ lock $ \() -> do
+    appendEvent path event
+    pure ()
 
 serialGoalPrompt :: Text -> [(GoalNodeId, Text)] -> GoalNode -> Text
 serialGoalPrompt originalPrompt predecessorSummaries node =
@@ -456,23 +814,26 @@ experimentToolsWithShell shellToolSpec =
   ]
 
 loadExperimentTools :: IO [ToolSpec]
-loadExperimentTools = do
+loadExperimentTools = getCurrentDirectory >>= experimentToolsForWorkspace
+
+experimentToolsForWorkspace :: FilePath -> IO [ToolSpec]
+experimentToolsForWorkspace workspaceRoot = do
   maybeSandbox <- lookupEnv "SOG_SANDBOX"
   maybeBwrap <- lookupEnv "SOG_BWRAP"
   case (maybeSandbox, maybeBwrap) of
     (Just "bwrap", _) ->
-      loadBwrapExperimentTools (fromMaybe "bwrap" maybeBwrap)
+      loadBwrapExperimentToolsAt workspaceRoot (fromMaybe "bwrap" maybeBwrap)
     (_, Just binary)
       | not (null binary) ->
-          loadBwrapExperimentTools binary
+          loadBwrapExperimentToolsAt workspaceRoot binary
     _ ->
-      pure experimentTools
+      pure (experimentToolsForPath workspaceRoot)
 
-loadBwrapExperimentTools :: FilePath -> IO [ToolSpec]
-loadBwrapExperimentTools binary = do
-  workspaceRoot <- normalise <$> getCurrentDirectory
+loadBwrapExperimentToolsAt :: FilePath -> FilePath -> IO [ToolSpec]
+loadBwrapExperimentToolsAt workspaceRoot binary = do
+  let normalWorkspaceRoot = normalise workspaceRoot
   let
-    bwrapRoot = workspaceRoot </> ".sog" </> "bwrap"
+    bwrapRoot = normalWorkspaceRoot </> ".sog" </> "bwrap"
     cacheRoot = bwrapRoot </> "cache"
     homeRoot = bwrapRoot </> "home"
     tmpRoot = bwrapRoot </> "tmp"
@@ -482,7 +843,7 @@ loadBwrapExperimentTools binary = do
     view =
       BwrapProfile.demoWorkspaceOnlyView
         BwrapProfile.DemoPaths
-          { BwrapProfile.demoWorkspaceHostPath = workspaceRoot
+          { BwrapProfile.demoWorkspaceHostPath = normalWorkspaceRoot
           , BwrapProfile.demoCacheHostPath = cacheRoot
           , BwrapProfile.demoHomeHostPath = homeRoot
           , BwrapProfile.demoTmpHostPath = tmpRoot
@@ -495,14 +856,25 @@ loadBwrapExperimentTools binary = do
         , bwrapSandboxView = view
         }
   pure
-    ( experimentToolsWithShell
-        ( bwrapShellTool
-            BwrapToolBinding
-              { bwrapToolRunner = runner
-              , bwrapToolHandle = handle
-              }
-        )
-    )
+    [ beginSubgoalTool
+    , endSubgoalTool
+    , recordEffectTool
+    , writeFileToolAt normalWorkspaceRoot
+    , bwrapShellTool
+        BwrapToolBinding
+          { bwrapToolRunner = runner
+          , bwrapToolHandle = handle
+          }
+    ]
+
+experimentToolsForPath :: FilePath -> [ToolSpec]
+experimentToolsForPath workspaceRoot =
+  [ beginSubgoalTool
+  , endSubgoalTool
+  , recordEffectTool
+  , writeFileToolAt workspaceRoot
+  , shellToolAt workspaceRoot
+  ]
 
 beginSubgoalTool :: ToolSpec
 beginSubgoalTool =
@@ -594,33 +966,48 @@ writeFileTool =
     ]
     ["path", "content"]
     $ \toolCall -> do
-      case parseArgs toolCall of
-        Left err -> pure (textResult toolCall err, [])
-        Right args -> do
-          resolved <- resolveWorkspaceWritePath (writePath args)
-          case resolved of
-            Left err -> pure (textResult toolCall err, [])
-            Right path -> do
-              createDirectoryIfMissing True (takeDirectory path)
-              TextIO.writeFile path (writeContent args)
-              pure
-                ( textResult toolCall "file written"
-                ,
-                  [ EffectRecorded
-                      { eventEffect =
-                          EffectRecord
-                            { effectKind = "write"
-                            , effectResource = Text.pack path
-                            , effectDetail = Just "write_file"
-                            }
-                      , eventActiveSubgoal = Nothing
-                      }
-                  ]
-                )
+      workspaceRoot <- normalise <$> getCurrentDirectory
+      handleWriteFileTool workspaceRoot toolCall
 
-resolveWorkspaceWritePath :: Text -> IO (Either Text FilePath)
-resolveWorkspaceWritePath requestedPath = do
-  workspaceRoot <- normalise <$> getCurrentDirectory
+writeFileToolAt :: FilePath -> ToolSpec
+writeFileToolAt workspaceRoot =
+  objectToolSpec
+    "write_file"
+    "Write complete UTF-8 text content to a local file."
+    [ ("path", textSchema "Path to write, such as /workspace/application.yml")
+    , ("content", textSchema "Complete file content to write")
+    ]
+    ["path", "content"]
+    $ handleWriteFileTool (normalise workspaceRoot)
+
+handleWriteFileTool :: FilePath -> ToolCall -> IO (ToolResult, [HarnessEvent])
+handleWriteFileTool workspaceRoot toolCall =
+  case parseArgs toolCall of
+    Left err -> pure (textResult toolCall err, [])
+    Right args -> do
+      resolved <- resolveWorkspaceWritePathAt workspaceRoot (writePath args)
+      case resolved of
+        Left err -> pure (textResult toolCall err, [])
+        Right path -> do
+          createDirectoryIfMissing True (takeDirectory path)
+          TextIO.writeFile path (writeContent args)
+          pure
+            ( textResult toolCall "file written"
+            ,
+              [ EffectRecorded
+                  { eventEffect =
+                      EffectRecord
+                        { effectKind = "write"
+                        , effectResource = Text.pack path
+                        , effectDetail = Just "write_file"
+                        }
+                  , eventActiveSubgoal = Nothing
+                  }
+              ]
+            )
+
+resolveWorkspaceWritePathAt :: FilePath -> Text -> IO (Either Text FilePath)
+resolveWorkspaceWritePathAt workspaceRoot requestedPath = do
   let
     rawPath = Text.unpack requestedPath
     workspaceAgentPrefix = "/workspace/" :: String
@@ -656,20 +1043,40 @@ shellTool =
     ]
     ["command"]
     $ \toolCall -> do
-      case parseArgs toolCall of
-        Left err -> pure (textResult toolCall err, [])
-        Right args -> do
-          (exitCode, stdoutText, stderrText) <-
-            readCreateProcessWithExitCode (shell (Text.unpack (shellCommand args))) ""
-          let resultText =
-                Text.unlines
-                  [ "exit_code: " <> exitCodeText exitCode
-                  , "stdout:"
-                  , Text.pack stdoutText
-                  , "stderr:"
-                  , Text.pack stderrText
-                  ]
-          pure (textResult toolCall resultText, [])
+      workspaceRoot <- normalise <$> getCurrentDirectory
+      handleShellTool workspaceRoot toolCall
+
+shellToolAt :: FilePath -> ToolSpec
+shellToolAt workspaceRoot =
+  objectToolSpec
+    "shell"
+    "Run a local shell command and return stdout, stderr, and exit code."
+    [ ("command", textSchema "Shell command to run")
+    ]
+    ["command"]
+    $ handleShellTool (normalise workspaceRoot)
+
+handleShellTool :: FilePath -> ToolCall -> IO (ToolResult, [HarnessEvent])
+handleShellTool workspaceRoot toolCall =
+  case parseArgs toolCall of
+    Left err -> pure (textResult toolCall err, [])
+    Right args -> do
+      (exitCode, stdoutText, stderrText) <-
+        readCreateProcessWithExitCode
+          ( (proc "/bin/sh" ["-lc", Text.unpack (shellCommand args)])
+              { cwd = Just workspaceRoot
+              }
+          )
+          ""
+      let resultText =
+            Text.unlines
+              [ "exit_code: " <> exitCodeText exitCode
+              , "stdout:"
+              , Text.pack stdoutText
+              , "stderr:"
+              , Text.pack stderrText
+              ]
+      pure (textResult toolCall resultText, [])
 
 appendEvent :: FilePath -> HarnessEvent -> IO ()
 appendEvent path event = do

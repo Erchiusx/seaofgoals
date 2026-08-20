@@ -44,7 +44,14 @@ SOG_SKILL_TEXT="$(<"$skill_path")"
 
 export SOG_SERIAL_GOALS_TEXT
 SOG_SERIAL_GOALS_TEXT="$(<"$experiment_dir/sog.json")"
-workflow_suffix="--serial-sog"
+export SOG_SCHEDULER="${SOG_SCHEDULER:-serial}"
+if [ "$SOG_SCHEDULER" = "concurrent" ]; then
+  export SOG_SANDBOX="${SOG_SANDBOX:-bwrap}"
+fi
+workflow_suffix="--$SOG_SCHEDULER-sog"
+
+export SOG_CONFIG_FILE="${SOG_CONFIG_FILE:-$repo_root/seaofgoals.config.json}"
+export SOG_CONFIG="${SOG_CONFIG:-/seaofgoals.config.json}"
 
 if [ -z "${OPENAI_API_KEY:-}" ] && [ -f "$HOME/.secrets/openai" ]; then
   # shellcheck disable=SC1090

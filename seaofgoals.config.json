@@ -1,0 +1,6 @@
+{
+  "concurrentChase": {
+    "maxParallelism": 4,
+    "maxReplans": 4
+  }
+}
