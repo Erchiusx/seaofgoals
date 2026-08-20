@@ -8,9 +8,14 @@ module Agent.SeaOfGoals.ExperimentRunner
   )
 where
 
+import Agent.SeaOfGoals.Compile.Compiler
+  ( CompiledGoalGraph (..)
+  , validateCompiledGoalGraph
+  )
 import Agent.SeaOfGoals.Compile.PromptTemplate (embedTextFile)
 import Agent.SeaOfGoals.Harness
   ( HarnessConfig (..)
+  , HarnessState (..)
   , runHarness
   )
 import Agent.SeaOfGoals.LLM
@@ -24,6 +29,22 @@ import Agent.SeaOfGoals.LLM.Backends.GPT
   ( GPTBackend (..)
   , defaultGPTEndpoint
   )
+import Agent.SeaOfGoals.Scheduling.Agentic
+  ( AgentRunResult (..)
+  , GoalGraph (..)
+  , GoalNode (..)
+  , GoalNodeId (..)
+  , SnapshotId (..)
+  )
+import Agent.SeaOfGoals.Scheduling.Compiled
+  ( compiledGraphToGoalGraph
+  )
+import Agent.SeaOfGoals.Scheduling.SerialScheduler
+  ( SerialScheduler (..)
+  , SerialSchedulerResult (..)
+  , goalPredecessors
+  , runSerialScheduler
+  )
 import Agent.SeaOfGoals.Tools
   ( ToolSpec
   , objectToolSpec
@@ -35,6 +56,9 @@ import Agent.SeaOfGoals.Trace
 import Agent.SeaOfGoals.Workflow
   ( WorkflowSpec
   , renderWorkflowPrompt
+  , workflowCompletedNodes
+  , workflowFailedNodes
+  , workflowSkippedNodes
   )
 import Data.Aeson
   ( FromJSON (..)
@@ -48,10 +72,21 @@ import Data.Aeson
   , (.=)
   )
 import Data.ByteString.Lazy qualified as LazyByteString
+import Data.IORef
+  ( IORef
+  , modifyIORef'
+  , newIORef
+  , readIORef
+  )
 import Data.List (isPrefixOf)
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
+import Data.Set (Set)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Data.Text.IO qualified as TextIO
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
@@ -62,6 +97,7 @@ import System.Directory
 import System.Environment
   ( getArgs
   , lookupEnv
+  , unsetEnv
   )
 import System.Exit (ExitCode (..))
 import System.FilePath
@@ -75,6 +111,15 @@ import System.Process
   ( readCreateProcessWithExitCode
   , shell
   )
+
+data ExperimentContext = ExperimentContext
+  { experimentBackend :: GPTBackend
+  , experimentRequestTemplate :: LLMRequest
+  , experimentTracePath :: FilePath
+  , experimentSystemPromptText :: Text
+  , experimentUserPromptText :: Text
+  , experimentWorkflowSpec :: Maybe WorkflowSpec
+  }
 
 runPromptFromArgs :: IO ()
 runPromptFromArgs = do
@@ -91,6 +136,23 @@ runPromptFromArgs = do
 
 runPrompt :: String -> Text -> IO ()
 runPrompt apiKey prompt = do
+  context <- loadExperimentContext apiKey prompt
+  maybeSerialGoalsText <- lookupEnv "SOG_SERIAL_GOALS_TEXT"
+  maybeSerialGoals <- lookupEnv "SOG_SERIAL_GOALS"
+  case maybeSerialGoalsText of
+    Just goalsText | not (null goalsText) -> do
+      unsetEnv "SOG_SERIAL_GOALS_TEXT"
+      compiledGraph <- parseCompiledGoalGraphText goalsText
+      runSerialPromptWithGraph context compiledGraph
+    _ ->
+      case maybeSerialGoals of
+        Just path | not (null path) -> do
+          unsetEnv "SOG_SERIAL_GOALS"
+          loadCompiledGoalGraph path >>= runSerialPromptWithGraph context
+        _ -> runSinglePrompt context
+
+loadExperimentContext :: String -> Text -> IO ExperimentContext
+loadExperimentContext apiKey prompt = do
   tracePath <- fromMaybe "sog-trace.jsonl" <$> lookupEnv "SOG_TRACE_PATH"
   model <- Text.pack . fromMaybe "gpt-5.5" <$> lookupEnv "SOG_MODEL"
   workflowSpec <- loadWorkflowSpecFromEnv
@@ -110,7 +172,7 @@ runPrompt apiKey prompt = do
             if "gpt-5" `Text.isPrefixOf` model
               then Nothing
               else Just 0.2
-        , requestMaxTokens = Just 1024
+        , requestMaxTokens = Nothing
         , requestStopSequences = []
         , requestResponseFormat = PlainText
         , requestTools = []
@@ -121,19 +183,213 @@ runPrompt apiKey prompt = do
       Text.intercalate
         "\n\n"
         (filter (not . Text.null) [experimentSystemPrompt, skillContext, workflowPrompt])
+  pure
+    ExperimentContext
+      { experimentBackend = backend
+      , experimentRequestTemplate = requestTemplate
+      , experimentTracePath = tracePath
+      , experimentSystemPromptText = systemPrompt
+      , experimentUserPromptText = prompt
+      , experimentWorkflowSpec = workflowSpec
+      }
+
+runSinglePrompt :: ExperimentContext -> IO ()
+runSinglePrompt context = do
   _ <-
     runHarness
       HarnessConfig
-        { harnessProvider = backend
-        , harnessRequestTemplate = requestTemplate
-        , harnessSystemPrompt = systemPrompt
-        , harnessUserPrompt = prompt
+        { harnessProvider = experimentBackend context
+        , harnessRequestTemplate = experimentRequestTemplate context
+        , harnessSystemPrompt = experimentSystemPromptText context
+        , harnessUserPrompt = experimentUserPromptText context
         , harnessTools = experimentTools
         , harnessMaxTurns = 64
-        , harnessEventSink = appendEvent tracePath
-        , harnessWorkflowSpec = workflowSpec
+        , harnessEventSink = appendEvent (experimentTracePath context)
+        , harnessWorkflowSpec = experimentWorkflowSpec context
         }
-  putStrLn ("Trace written to " <> tracePath)
+  putStrLn ("Trace written to " <> experimentTracePath context)
+
+runSerialPromptWithGraph :: ExperimentContext -> CompiledGoalGraph -> IO ()
+runSerialPromptWithGraph context compiledGraph = do
+  let goalGraph = compiledGraphToGoalGraph compiledGraph
+  summariesRef <- newSummaries
+  result <-
+    runSerialScheduler
+      SerialScheduler
+        { serialSchedulerRunGoal =
+            runSerialGoal context goalGraph summariesRef
+        }
+      goalGraph
+  case result of
+    Left err -> fail ("serial scheduler failed: " <> Text.unpack err)
+    Right schedulerResult -> do
+      putStrLn
+        ( "Serial goals completed: "
+            <> show
+              ( fmap
+                  (Text.unpack . unGoalNodeId)
+                  (serialSchedulerRunOrder schedulerResult)
+              )
+        )
+      putStrLn ("Trace written to " <> experimentTracePath context)
+
+loadCompiledGoalGraph :: FilePath -> IO CompiledGoalGraph
+loadCompiledGoalGraph path = do
+  decoded <- eitherDecode <$> LazyByteString.readFile path
+  case decoded of
+    Left err -> fail ("could not parse SOG_SERIAL_GOALS: " <> err)
+    Right graph -> validateLoadedCompiledGoalGraph "SOG_SERIAL_GOALS" graph
+
+parseCompiledGoalGraphText :: String -> IO CompiledGoalGraph
+parseCompiledGoalGraphText text =
+  case eitherDecode
+    (LazyByteString.fromStrict (TextEncoding.encodeUtf8 (Text.pack text))) of
+    Left err -> fail ("could not parse SOG_SERIAL_GOALS_TEXT: " <> err)
+    Right graph -> validateLoadedCompiledGoalGraph "SOG_SERIAL_GOALS_TEXT" graph
+
+validateLoadedCompiledGoalGraph
+  :: String -> CompiledGoalGraph -> IO CompiledGoalGraph
+validateLoadedCompiledGoalGraph source graph =
+  case validateLoadedCompiledGoalGraphPure graph of
+    [] -> pure graph
+    errors ->
+      fail
+        ( "invalid "
+            <> source
+            <> ": "
+            <> Text.unpack (Text.intercalate "; " errors)
+        )
+
+validateLoadedCompiledGoalGraphPure :: CompiledGoalGraph -> [Text]
+validateLoadedCompiledGoalGraphPure = validateCompiledGoalGraph
+
+runSerialGoal
+  :: ExperimentContext
+  -> GoalGraph
+  -> Summaries
+  -> GoalNode
+  -> IO (Either Text AgentRunResult)
+runSerialGoal context goalGraph summaries node = do
+  predecessorSummaries <-
+    summariesFor summaries (goalPredecessors goalGraph (goalNodeId node))
+  let prompt =
+        serialGoalPrompt
+          (experimentUserPromptText context)
+          predecessorSummaries
+          node
+  state <-
+    runHarness
+      HarnessConfig
+        { harnessProvider = experimentBackend context
+        , harnessRequestTemplate = experimentRequestTemplate context
+        , harnessSystemPrompt = experimentSystemPromptText context
+        , harnessUserPrompt = prompt
+        , harnessTools = experimentTools
+        , harnessMaxTurns = 32
+        , harnessEventSink = appendEvent (experimentTracePath context)
+        , harnessWorkflowSpec = experimentWorkflowSpec context
+        }
+  let
+    status = serialGoalStatus node state
+    summary = serialGoalSummary node status
+    result =
+      AgentRunResult
+        { agentRunResultGoal = goalNodeId node
+        , agentRunResultStatus = status
+        , agentRunResultSummaryForDependents = summary
+        , agentRunResultReads = Set.empty
+        , agentRunResultWrites = Set.empty
+        , agentRunResultSnapshot = SnapshotId (unGoalNodeId (goalNodeId node))
+        }
+  if serialGoalStatusIsTerminal status
+    then do
+      rememberSummary summaries (goalNodeId node) summary
+      pure (Right result)
+    else
+      pure
+        ( Left
+            ( "serial goal "
+                <> unGoalNodeId (goalNodeId node)
+                <> " did not complete successfully: "
+                <> status
+            )
+        )
+
+serialGoalPrompt :: Text -> [(GoalNodeId, Text)] -> GoalNode -> Text
+serialGoalPrompt originalPrompt predecessorSummaries node =
+  Text.intercalate
+    "\n\n"
+    ( filter
+        (not . Text.null)
+        [ "Original task:\n" <> originalPrompt
+        , renderedSummaries
+        , Text.unlines
+            [ "Execute exactly this compiled goal now."
+            , "Goal id: " <> unGoalNodeId (goalNodeId node)
+            , "Goal name: " <> goalNodeName node
+            , ""
+            , goalNodePrompt node
+            , ""
+            , "Use the current workspace and process environment as the source of truth."
+            , "If a dependency service is already available through an environment variable, use that value instead of recreating the service or assuming host ports from the original skill text."
+            , "Do not call docker unless this goal explicitly requires Docker and the docker command is available."
+            , "Do not read harness trajectory files such as sog-trace.jsonl; they are private experiment records, not task inputs."
+            , ""
+            , "Before doing work, call begin_subgoal with this exact goal id."
+            , "When this goal is complete, call end_subgoal with this exact goal id and a concise summary."
+            , "Do not start a different goal in this agent loop."
+            ]
+        ]
+    )
+ where
+  renderedSummaries
+    | null predecessorSummaries = ""
+    | otherwise =
+        Text.unlines
+          ( "Completed predecessor summaries:"
+              : fmap renderSummary predecessorSummaries
+          )
+  renderSummary (goalId, summary) =
+    "- " <> unGoalNodeId goalId <> ": " <> summary
+
+serialGoalStatus :: GoalNode -> HarnessState -> Text
+serialGoalStatus node state
+  | unGoalNodeId (goalNodeId node)
+      `Set.member` workflowCompletedNodes (harnessWorkflowStatus state) =
+      "success"
+  | unGoalNodeId (goalNodeId node)
+      `Set.member` workflowSkippedNodes (harnessWorkflowStatus state) =
+      "skipped"
+  | unGoalNodeId (goalNodeId node)
+      `Set.member` workflowFailedNodes (harnessWorkflowStatus state) =
+      "failed"
+  | otherwise = "finished_without_success_status"
+
+serialGoalStatusIsTerminal :: Text -> Bool
+serialGoalStatusIsTerminal status =
+  status == "success" || status == "skipped"
+
+serialGoalSummary :: GoalNode -> Text -> Text
+serialGoalSummary node status =
+  goalNodeName node <> " finished with status " <> status
+
+type Summaries = IORef (Map GoalNodeId Text)
+
+newSummaries :: IO Summaries
+newSummaries = newIORef Map.empty
+
+rememberSummary :: Summaries -> GoalNodeId -> Text -> IO ()
+rememberSummary summaries goalId summary =
+  modifyIORef' summaries (Map.insert goalId summary)
+
+summariesFor :: Summaries -> Set GoalNodeId -> IO [(GoalNodeId, Text)]
+summariesFor summaries goalIds = do
+  summaryMap <- readIORef summaries
+  pure
+    [ (goalId, summary)
+    | goalId <- Set.toList goalIds
+    , Just summary <- [Map.lookup goalId summaryMap]
+    ]
 
 loadWorkflowSpecFromEnv :: IO (Maybe WorkflowSpec)
 loadWorkflowSpecFromEnv = do

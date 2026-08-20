@@ -24,7 +24,7 @@ services:
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       SOG_TRACE_PATH: /workspace/sog-trace.jsonl
-      SOG_WORKFLOW_SPEC: ${SOG_WORKFLOW_SPEC-/workflow.json}
+      SOG_SERIAL_GOALS_TEXT: ${SOG_SERIAL_GOALS_TEXT}
       SOG_SKILL_TEXT: ${SOG_SKILL_TEXT}
       SOG_MODEL: ${SOG_MODEL:-gpt-5.5}
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/migration_review
@@ -35,7 +35,6 @@ services:
       - ./fixture:/seed:ro
       - ./runs/current:/workspace
       - ./prompt.txt:/prompt.txt:ro
-      - ./workflow.json:/workflow.json:ro
     working_dir: /workspace
     command: >
       bash -lc 'find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf {} + && cp -a /seed/. /workspace/ && SeaOfGoals "$$(cat /prompt.txt)"'

@@ -26,9 +26,9 @@ if [ ! -d "$experiment_dir" ]; then
   exit 2
 fi
 
-if [ "${SOG_DISABLE_WORKFLOW:-0}" != "1" ] && [ ! -f "$experiment_dir/workflow.json" ]; then
-  echo "missing workflow spec: $experiment_dir/workflow.json" >&2
-  echo "run 'make build-workflows' from the repository root first." >&2
+if [ ! -f "$experiment_dir/sog.json" ]; then
+  echo "missing compiled goal spec: $experiment_dir/sog.json" >&2
+  echo "run 'make build-sog' from the repository root first." >&2
   exit 2
 fi
 
@@ -42,11 +42,9 @@ fi
 export SOG_SKILL_TEXT
 SOG_SKILL_TEXT="$(<"$skill_path")"
 
-workflow_suffix=""
-if [ "${SOG_DISABLE_WORKFLOW:-0}" = "1" ]; then
-  export SOG_WORKFLOW_SPEC=""
-  workflow_suffix="--no-scfg"
-fi
+export SOG_SERIAL_GOALS_TEXT
+SOG_SERIAL_GOALS_TEXT="$(<"$experiment_dir/sog.json")"
+workflow_suffix="--serial-sog"
 
 if [ -z "${OPENAI_API_KEY:-}" ] && [ -f "$HOME/.secrets/openai" ]; then
   # shellcheck disable=SC1090

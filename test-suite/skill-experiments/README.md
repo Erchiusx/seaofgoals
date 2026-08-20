@@ -19,8 +19,11 @@ Run from the repository root:
 ```bash
 make experiment-mysql2postgres
 make experiment-test-with-postgres
-make experiment-docker-development
 ```
+
+`docker-development` is kept as a fixture candidate but is not part of the
+current test set, because it would require reasoning about Docker access from
+inside the runner environment.
 
 The runner sources `$HOME/.secrets/openai` automatically when `OPENAI_API_KEY` is not already set.
 

@@ -26,14 +26,46 @@ import Agent.SeaOfGoals.LLM
   , ToolResult (..)
   )
 import Agent.SeaOfGoals.Scheduling.Agentic
-  ( GoalGraph (..)
+  ( AgentRunResult (..)
+  , GoalGraph (..)
   , GoalNode (..)
   , GoalNodeId (..)
+  , SnapshotId (..)
+  )
+import Agent.SeaOfGoals.Scheduling.Compiled
+  ( compiledGraphToGoalGraph
+  )
+import Agent.SeaOfGoals.Scheduling.ConcurrentChase
+  ( ConcurrentChaseConflict (..)
+  , ConcurrentChaseResult (..)
+  , ConcurrentChaseRunner (..)
+  , runConcurrentChase
+  )
+import Agent.SeaOfGoals.Scheduling.GraphChase
+  ( ChaseEvent (..)
+  , ChaseState (..)
+  , GoalLaunch (..)
+  , completeGoal
+  , initialChaseState
+  , nextReadyGoals
+  , replanForMergeConflict
+  , startReadyGoals
   )
 import Agent.SeaOfGoals.Scheduling.MergeScheduler
   ( MergeDependencyUpdate (..)
   , applyMergeConflict
   , goalGraphDescendants
+  )
+import Agent.SeaOfGoals.Scheduling.Replan
+  ( ReplanInput (..)
+  , ReplanResult (..)
+  , replanAfterMergeConflict
+  )
+import Agent.SeaOfGoals.Scheduling.SerialScheduler
+  ( SerialScheduler (..)
+  , SerialSchedulerResult (..)
+  , readyGoalNodes
+  , runSerialScheduler
   )
 import Agent.SeaOfGoals.Tools
   ( ToolSpec
@@ -115,6 +147,7 @@ import Data.IORef
   , modifyIORef'
   , newIORef
   , readIORef
+  , writeIORef
   )
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
@@ -143,6 +176,10 @@ main = do
   rootOnlyEffectsTest
   accessNormalizationTest
   mergeSchedulerConflictTest
+  replanAfterMergeConflictTest
+  graphChaseSchedulerTest
+  concurrentChaseSchedulerTest
+  serialSchedulerTest
   sandboxedToolCallTest
   eventsRef <- newIORef []
   provider <- newFakeProvider fakeResponses
@@ -207,6 +244,19 @@ compilerGraphValidationTest = do
     "valid compiler DAG"
     []
     (validateCompiledGoalGraph validCompilerGraph)
+  let convertedGraph = compiledGraphToGoalGraph validCompilerGraph
+  assertEqual
+    "compiled graph preserves goal array as serial order"
+    [0, 1]
+    ( goalNodeSerialIndex
+        <$> Map.elems (goalGraphNodes convertedGraph)
+    )
+  assertBool
+    "compiled graph converts predecessors to scheduler edges"
+    ( Set.member
+        (goalId "G001", goalId "G002")
+        (goalGraphEdges convertedGraph)
+    )
   assertBool
     "compiler DAG rejects unknown predecessor"
     (not (null (validateCompiledGoalGraph unknownPredecessorCompilerGraph)))
@@ -853,6 +903,270 @@ mergeSchedulerConflictTest = do
         (Set.fromList [goalId "S2", goalId "S3", goalId "S4"])
         (mergeDependencyInvalidated update)
 
+replanAfterMergeConflictTest :: IO ()
+replanAfterMergeConflictTest = do
+  let
+    graph =
+      GoalGraph
+        { goalGraphNodes =
+            Map.fromList
+              [ (goalId "S1", schedulerGoal "S1" 1)
+              , (goalId "S2", schedulerGoal "S2" 2)
+              , (goalId "S3", schedulerGoal "S3" 3)
+              , (goalId "S4", schedulerGoal "S4" 4)
+              , (goalId "S5", schedulerGoal "S5" 5)
+              ]
+        , goalGraphEdges =
+            Set.fromList
+              [ (goalId "S2", goalId "S3")
+              , (goalId "S3", goalId "S4")
+              ]
+        }
+    completed =
+      Map.fromList
+        [ (goalId "S1", fakeAgentRunResult (schedulerGoal "S1" 1))
+        , (goalId "S2", fakeAgentRunResult (schedulerGoal "S2" 2))
+        , (goalId "S3", fakeAgentRunResult (schedulerGoal "S3" 3))
+        ]
+    input =
+      ReplanInput
+        { replanInputGraph = graph
+        , replanInputCompleted = completed
+        , replanInputQueued = Set.fromList [goalId "S4", goalId "S5"]
+        , replanInputRunning = Set.singleton (goalId "S3")
+        , replanInputConflictLeft = goalId "S2"
+        , replanInputConflictRight = goalId "S1"
+        }
+
+  case replanAfterMergeConflict input of
+    Left err ->
+      fail ("expected replan result, got " <> Text.unpack err)
+    Right result -> do
+      assertEqual
+        "replan keeps completed former goal"
+        (Set.singleton (goalId "S1"))
+        (Map.keysSet (replanResultCompleted result))
+      assertEqual
+        "replan cancels invalidated queued/running work"
+        (Set.fromList [goalId "S3", goalId "S4"])
+        (replanResultCancelled result)
+      assertBool
+        "replan adds discovered dependency"
+        ( Set.member
+            (goalId "S1", goalId "S2")
+            (goalGraphEdges (mergeDependencyGraph (replanResultDependencyUpdate result)))
+        )
+      assertEqual
+        "replan queues invalidated work plus existing unaffected queued work"
+        (Set.fromList [goalId "S2", goalId "S3", goalId "S4", goalId "S5"])
+        (replanResultQueued result)
+      assertEqual
+        "replan exposes dependency-ready queued goals in serial order"
+        [goalId "S2", goalId "S5"]
+        (replanResultReady result)
+
+graphChaseSchedulerTest :: IO ()
+graphChaseSchedulerTest = do
+  let
+    graph =
+      GoalGraph
+        { goalGraphNodes =
+            Map.fromList
+              [ (goalId "S1", schedulerGoal "S1" 1)
+              , (goalId "S2", schedulerGoal "S2" 2)
+              , (goalId "S3", schedulerGoal "S3" 3)
+              , (goalId "S4", schedulerGoal "S4" 4)
+              ]
+        , goalGraphEdges =
+            Set.fromList
+              [ (goalId "S2", goalId "S3")
+              ]
+        }
+    initial = initialChaseState graph
+
+  assertEqual
+    "graph chase initially exposes dependency-ready queued goals"
+    [goalId "S1", goalId "S2", goalId "S4"]
+    (goalNodeId <$> nextReadyGoals initial)
+
+  let (runningState, launches) = startReadyGoals 2 initial
+  assertEqual
+    "graph chase starts one concurrent batch in serial order"
+    [goalId "S1", goalId "S2"]
+    (goalNodeId . goalLaunchNode <$> launches)
+  assertEqual
+    "graph chase moves launched goals to running"
+    (Set.fromList [goalId "S1", goalId "S2"])
+    (chaseRunning runningState)
+  assertEqual
+    "graph chase keeps not-yet-started ready work queued"
+    (Set.fromList [goalId "S3", goalId "S4"])
+    (chaseQueued runningState)
+
+  completedS1 <-
+    either (fail . Text.unpack) pure $
+      completeGoal (fakeAgentRunResult (schedulerGoal "S1" 1)) runningState
+  completedS2 <-
+    either (fail . Text.unpack) pure $
+      completeGoal (fakeAgentRunResult (schedulerGoal "S2" 2)) completedS1
+  assertEqual
+    "graph chase records completed concurrent goals"
+    (Set.fromList [goalId "S1", goalId "S2"])
+    (Map.keysSet (chaseCompleted completedS2))
+
+  replanned <-
+    either (fail . Text.unpack) pure $
+      replanForMergeConflict (goalId "S2") (goalId "S1") completedS2
+  assertEqual
+    "graph chase keeps the serial former completed"
+    (Set.singleton (goalId "S1"))
+    (Map.keysSet (chaseCompleted replanned))
+  assertEqual
+    "graph chase requeues invalidated latter and descendant"
+    (Set.fromList [goalId "S2", goalId "S3", goalId "S4"])
+    (chaseQueued replanned)
+  assertEqual
+    "graph chase ready set follows updated dependency"
+    [goalId "S2", goalId "S4"]
+    (goalNodeId <$> nextReadyGoals replanned)
+  assertBool
+    "graph chase records replan event"
+    (any isReplanEvent (chaseEvents replanned))
+
+concurrentChaseSchedulerTest :: IO ()
+concurrentChaseSchedulerTest = do
+  runCountsRef <- newIORef Map.empty
+  mergedRef <- newIORef []
+  conflictRef <- newIORef False
+  let
+    graph =
+      GoalGraph
+        { goalGraphNodes =
+            Map.fromList
+              [ (goalId "S1", schedulerGoal "S1" 1)
+              , (goalId "S2", schedulerGoal "S2" 2)
+              , (goalId "S3", schedulerGoal "S3" 3)
+              ]
+        , goalGraphEdges =
+            Set.fromList
+              [ (goalId "S2", goalId "S3")
+              ]
+        }
+    runner =
+      ConcurrentChaseRunner
+        { concurrentChaseMaxParallelism = 2
+        , concurrentChaseMaxReplans = 4
+        , concurrentChaseRunGoal = \node -> do
+            modifyIORef'
+              runCountsRef
+              (Map.insertWith (+) (goalNodeId node) (1 :: Int))
+            pure (Right (fakeAgentRunResult node))
+        , concurrentChaseMergeGoal = \result -> do
+            merged <- readIORef mergedRef
+            conflictTriggered <- readIORef conflictRef
+            if agentRunResultGoal result == goalId "S2"
+              && goalId "S1" `elem` merged
+              && not conflictTriggered
+              then do
+                writeIORef conflictRef True
+                pure $
+                  Left
+                    ConcurrentChaseConflict
+                      { concurrentChaseConflictLeft = goalId "S2"
+                      , concurrentChaseConflictRight = goalId "S1"
+                      , concurrentChaseConflictReason = "synthetic conflict"
+                      }
+              else do
+                modifyIORef' mergedRef (<> [agentRunResultGoal result])
+                pure (Right ())
+        }
+
+  result <- runConcurrentChase runner graph
+  case result of
+    Left err ->
+      fail ("expected concurrent chase success, got " <> Text.unpack err)
+    Right summary -> do
+      runCounts <- readIORef runCountsRef
+      assertEqual
+        "concurrent chase reruns only the conflict-latter goal"
+        ( Map.fromList
+            [ (goalId "S1", 1 :: Int)
+            , (goalId "S2", 2)
+            , (goalId "S3", 1)
+            ]
+        )
+        runCounts
+      assertEqual
+        "concurrent chase accepts every goal"
+        (Set.fromList [goalId "S1", goalId "S2", goalId "S3"])
+        (Map.keysSet (concurrentChaseCompleted summary))
+      assertEqual
+        "concurrent chase records successful merge order"
+        [goalId "S1", goalId "S2", goalId "S3"]
+        (concurrentChaseMergeOrder summary)
+      assertEqual
+        "concurrent chase records one replan"
+        1
+        (concurrentChaseReplans summary)
+      assertBool
+        "concurrent chase graph learns serial conflict dependency"
+        ( Set.member
+            (goalId "S1", goalId "S2")
+            (goalGraphEdges (chaseGraph (concurrentChaseFinalState summary)))
+        )
+
+serialSchedulerTest :: IO ()
+serialSchedulerTest = do
+  let
+    graph =
+      GoalGraph
+        { goalGraphNodes =
+            Map.fromList
+              [ (goalId "S1", schedulerGoal "S1" 1)
+              , (goalId "S2", schedulerGoal "S2" 2)
+              , (goalId "S3", schedulerGoal "S3" 3)
+              ]
+        , goalGraphEdges =
+            Set.fromList
+              [ (goalId "S1", goalId "S3")
+              , (goalId "S2", goalId "S3")
+              ]
+        }
+    scheduler =
+      SerialScheduler
+        { serialSchedulerRunGoal = pure . Right . fakeAgentRunResult
+        }
+
+  assertEqual
+    "serial scheduler exposes initially ready goals in serial order"
+    [goalId "S1", goalId "S2"]
+    (goalNodeId <$> readyGoalNodes graph Set.empty)
+  result <- runSerialScheduler scheduler graph
+  case result of
+    Left err ->
+      fail ("expected serial scheduler success, got " <> Text.unpack err)
+    Right summary -> do
+      assertEqual
+        "serial scheduler follows dependency-safe serial order"
+        [goalId "S1", goalId "S2", goalId "S3"]
+        (serialSchedulerRunOrder summary)
+      assertEqual
+        "serial scheduler records completed result for every node"
+        (Set.fromList [goalId "S1", goalId "S2", goalId "S3"])
+        (Map.keysSet (serialSchedulerCompleted summary))
+
+  mismatchResult <-
+    runSerialScheduler
+      SerialScheduler
+        { serialSchedulerRunGoal =
+            \node -> pure (Right (fakeAgentRunResult node){agentRunResultGoal = goalId "wrong"})
+        }
+      graph
+  case mismatchResult of
+    Left "agent result goal id does not match scheduled goal" -> pure ()
+    Left err -> fail ("unexpected serial scheduler mismatch error: " <> Text.unpack err)
+    Right summary -> fail ("expected serial scheduler mismatch failure, got " <> show summary)
+
 sandboxedToolCallTest :: IO ()
 sandboxedToolCallTest = do
   tempRoot <- getTemporaryDirectory
@@ -996,6 +1310,18 @@ schedulerGoal nodeId serialIndex =
     , goalNodeName = nodeId
     , goalNodePrompt = "run goal"
     , goalNodeSerialIndex = serialIndex
+    }
+
+fakeAgentRunResult :: GoalNode -> AgentRunResult
+fakeAgentRunResult node =
+  AgentRunResult
+    { agentRunResultGoal = goalNodeId node
+    , agentRunResultStatus = "success"
+    , agentRunResultSummaryForDependents = "done"
+    , agentRunResultReads = Set.empty
+    , agentRunResultWrites = Set.empty
+    , agentRunResultSnapshot =
+        SnapshotId ("snapshot-" <> unGoalNodeId (goalNodeId node))
     }
 
 beginSubgoalTool :: ToolSpec
@@ -1252,6 +1578,10 @@ isWorkflowStatusForS1
     , eventLastNode = Just "S1"
     } = Set.member "S1" completed
 isWorkflowStatusForS1 _ = False
+
+isReplanEvent :: ChaseEvent -> Bool
+isReplanEvent ChaseConflictReplanned{} = True
+isReplanEvent _ = False
 
 isShellResult :: HarnessEvent -> Bool
 isShellResult ToolResultObserved{eventToolName = "shell", eventResult = result} =

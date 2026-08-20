@@ -39,7 +39,12 @@ library
         Agent.SeaOfGoals.LLM.Backends.GPT
         Agent.SeaOfGoals.LLM.Backends.Gemini
         Agent.SeaOfGoals.Scheduling.Agentic
+        Agent.SeaOfGoals.Scheduling.Compiled
+        Agent.SeaOfGoals.Scheduling.ConcurrentChase
+        Agent.SeaOfGoals.Scheduling.GraphChase
         Agent.SeaOfGoals.Scheduling.MergeScheduler
+        Agent.SeaOfGoals.Scheduling.Replan
+        Agent.SeaOfGoals.Scheduling.SerialScheduler
         Agent.SeaOfGoals.Talks
         Agent.SeaOfGoals.Tools
         Agent.SeaOfGoals.Trace

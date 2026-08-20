@@ -1,10 +1,13 @@
 # docker-development Experiment
 
-Runs the `docker-development` skill against a deliberately weak Node.js Dockerfile and compose setup.
+This experiment is currently paused and is not part of the active test set.
 
-This experiment does not mount the Docker socket and does not run Docker inside the runner. It measures static inspection, file editing, and effect tracing.
+The fixture was intended to run the `docker-development` skill against a
+deliberately weak Node.js Dockerfile and compose setup. We are not using it for
+the current serial/DAG experiments because it depends on Docker-oriented
+behavior from inside the runner environment.
 
-Run from the repository root:
+Manual run target, if this candidate is restored later:
 
 ```bash
 make experiment-docker-development
