@@ -4,7 +4,7 @@ SKILL_PATH ?=
 COMPILED_GOALS_OUT ?= compiled-goals.json
 SCFG_PYTHON ?= /home/erchius/development/scfg/scfg-package/.venv/bin/python
 
-.PHONY: lint test compile-skill build-workflows smoke-containerd smoke-bwrap experiment experiment-concurrent experiment-no-scfg experiment-nextjs-performance experiment-database-migrations experiment-mysql2postgres experiment-test-with-postgres experiment-docker-development experiments experiments-no-scfg view-trace
+.PHONY: lint test compile-skill build-workflows smoke-containerd smoke-bwrap experiment experiment-concurrent experiment-codex experiment-no-scfg experiment-nextjs-performance experiment-database-migrations experiment-mysql2postgres experiment-test-with-postgres experiment-docker-development experiments experiments-no-scfg view-trace
 
 lint:
 	fourmolu --config ./fourmolu.yaml -i lib/ test/ test-suite/agent-runner/ compiler/ smoke/ test-fuse/
@@ -32,6 +32,10 @@ experiment:
 experiment-concurrent:
 	test -n "$(SKILL_EXPERIMENT)"
 	SOG_SCHEDULER=concurrent bash test-suite/skill-experiments/run-experiment.sh "$(SKILL_EXPERIMENT)"
+
+experiment-codex:
+	test -n "$(SKILL_EXPERIMENT)"
+	SOG_AGENT_RUNNER=codex SOG_EXPERIMENT_DRIVER=host bash test-suite/skill-experiments/run-experiment.sh "$(SKILL_EXPERIMENT)"
 
 experiment-no-scfg:
 	test -n "$(SKILL_EXPERIMENT)"

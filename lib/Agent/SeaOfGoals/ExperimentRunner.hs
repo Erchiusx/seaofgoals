@@ -8,6 +8,12 @@ module Agent.SeaOfGoals.ExperimentRunner
   )
 where
 
+import Agent.SeaOfGoals.CodexProcess
+  ( CodexProcessConfig
+  , CodexProcessResult (..)
+  , loadCodexProcessConfigFromEnv
+  , runCodexProcess
+  )
 import Agent.SeaOfGoals.Compile.Compiler
   ( CompiledGoalGraph (..)
   , validateCompiledGoalGraph
@@ -50,6 +56,10 @@ import Agent.SeaOfGoals.Scheduling.ConcurrentChase
   , ConcurrentChaseResult (..)
   , ConcurrentChaseRunner (..)
   , runConcurrentChase
+  )
+import Agent.SeaOfGoals.Scheduling.GraphChase
+  ( ChaseState (..)
+  , initialChaseState
   )
 import Agent.SeaOfGoals.Scheduling.SerialScheduler
   ( SerialScheduler (..)
@@ -95,6 +105,7 @@ import Control.Monad
   , forM
   , forM_
   , unless
+  , void
   , when
   )
 import Data.Aeson
@@ -165,23 +176,31 @@ data ExperimentContext = ExperimentContext
   , experimentSystemPromptText :: Text
   , experimentUserPromptText :: Text
   , experimentConfig :: Config
+  , experimentAgentRunner :: AgentRunnerMode
+  , experimentCodexProcessConfig :: CodexProcessConfig
   , experimentToolsForRun :: [ToolSpec]
   , experimentEventSink :: HarnessEvent -> IO ()
   , experimentWorkflowSpec :: Maybe WorkflowSpec
   }
 
+data AgentRunnerMode
+  = HarnessAgentRunner
+  | CodexAgentRunner
+  deriving stock (Eq, Show)
+
 runPromptFromArgs :: IO ()
 runPromptFromArgs = do
   apiKey <- lookupEnv "OPENAI_API_KEY"
-  case apiKey of
-    Nothing ->
+  agentRunner <- loadAgentRunnerMode
+  case (agentRunner, apiKey) of
+    (HarnessAgentRunner, Nothing) ->
       putStrLn "OPENAI_API_KEY is not set."
-    Just key -> do
+    (_, maybeKey) -> do
       args <- getArgs
       let prompt = Text.pack (unwords args)
       if Text.null prompt
         then putStrLn "Usage: SeaOfGoals-agent-runner <prompt>"
-        else runPrompt key prompt
+        else runPrompt (fromMaybe "" maybeKey) prompt
 
 runPrompt :: String -> Text -> IO ()
 runPrompt apiKey prompt = do
@@ -214,6 +233,8 @@ loadExperimentContext apiKey prompt = do
   tracePath <- fromMaybe "sog-trace.jsonl" <$> lookupEnv "SOG_TRACE_PATH"
   model <- Text.pack . fromMaybe "gpt-5.5" <$> lookupEnv "SOG_MODEL"
   config <- loadConfigFromEnv
+  agentRunner <- loadAgentRunnerMode
+  codexProcessConfig <- loadCodexProcessConfigFromEnv
   workflowSpec <- loadWorkflowSpecFromEnv
   tools <- loadExperimentTools
   skillContext <- loadSkillContextFromEnv
@@ -252,6 +273,8 @@ loadExperimentContext apiKey prompt = do
       , experimentSystemPromptText = systemPrompt
       , experimentUserPromptText = prompt
       , experimentConfig = config
+      , experimentAgentRunner = agentRunner
+      , experimentCodexProcessConfig = codexProcessConfig
       , experimentToolsForRun = tools
       , experimentEventSink = lockedAppendEvent traceLock tracePath
       , experimentWorkflowSpec = workflowSpec
@@ -259,18 +282,32 @@ loadExperimentContext apiKey prompt = do
 
 runSinglePrompt :: ExperimentContext -> IO ()
 runSinglePrompt context = do
-  _ <-
-    runHarness
-      HarnessConfig
-        { harnessProvider = experimentBackend context
-        , harnessRequestTemplate = experimentRequestTemplate context
-        , harnessSystemPrompt = experimentSystemPromptText context
-        , harnessUserPrompt = experimentUserPromptText context
-        , harnessTools = experimentToolsForRun context
-        , harnessMaxTurns = 64
-        , harnessEventSink = experimentEventSink context
-        , harnessWorkflowSpec = experimentWorkflowSpec context
-        }
+  case experimentAgentRunner context of
+    HarnessAgentRunner ->
+      void $
+        runHarness
+          HarnessConfig
+            { harnessProvider = experimentBackend context
+            , harnessRequestTemplate = experimentRequestTemplate context
+            , harnessSystemPrompt = experimentSystemPromptText context
+            , harnessUserPrompt = experimentUserPromptText context
+            , harnessTools = experimentToolsForRun context
+            , harnessMaxTurns = 64
+            , harnessEventSink = experimentEventSink context
+            , harnessWorkflowSpec = experimentWorkflowSpec context
+            }
+    CodexAgentRunner -> do
+      workspaceRoot <- normalise <$> getCurrentDirectory
+      result <-
+        runCodexProcess
+          (experimentCodexProcessConfig context)
+          (experimentEventSink context)
+          Nothing
+          workspaceRoot
+          (codexPrompt context (experimentUserPromptText context))
+      when (codexProcessExitCode result /= 0) $
+        fail
+          ("codex process failed with exit code " <> show (codexProcessExitCode result))
   putStrLn ("Trace written to " <> experimentTracePath context)
 
 runSerialPromptWithGraph :: ExperimentContext -> CompiledGoalGraph -> IO ()
@@ -304,6 +341,11 @@ runConcurrentPromptWithGraph context compiledGraph = do
     goalGraph = compiledGraphToGoalGraph compiledGraph
     chaseConfig = configConcurrentChase (experimentConfig context)
   workspaceRoot <- normalise <$> getCurrentDirectory
+  recordDagSnapshot
+    context
+    "concurrent_initial"
+    (Just "compiled goal graph before scheduling")
+    (initialChaseState goalGraph)
   summariesRef <- newSummaries
   runsRef <- newIORef Map.empty
   acceptedWritesRef <- newIORef Map.empty
@@ -324,6 +366,7 @@ runConcurrentPromptWithGraph context compiledGraph = do
         , concurrentChaseMergeGoal =
             mergeConcurrentGoal
               context
+              goalGraph
               workspaceRoot
               summariesRef
               acceptedWritesRef
@@ -346,10 +389,14 @@ requireConcurrentWorkspaceRemap :: IO ()
 requireConcurrentWorkspaceRemap = do
   maybeSandbox <- lookupEnv "SOG_SANDBOX"
   maybeBwrap <- lookupEnv "SOG_BWRAP"
-  let hasBwrap = maybeSandbox == Just "bwrap" || maybe False (not . null) maybeBwrap
+  maybeAgentRunner <- lookupEnv "SOG_AGENT_RUNNER"
+  let
+    hasBwrap = maybeSandbox == Just "bwrap" || maybe False (not . null) maybeBwrap
+    usesCodexRunner = maybeAgentRunner == Just "codex"
   unless hasBwrap $
-    fail
-      "concurrent scheduler requires SOG_SANDBOX=bwrap or SOG_BWRAP so each goal workspace can be remapped to /workspace"
+    unless usesCodexRunner $
+      fail
+        "concurrent scheduler requires SOG_SANDBOX=bwrap, SOG_BWRAP, or SOG_AGENT_RUNNER=codex so each goal workspace can be remapped to /workspace"
 
 loadCompiledGoalGraph :: FilePath -> IO CompiledGoalGraph
 loadCompiledGoalGraph path = do
@@ -381,6 +428,17 @@ validateLoadedCompiledGoalGraph source graph =
 validateLoadedCompiledGoalGraphPure :: CompiledGoalGraph -> [Text]
 validateLoadedCompiledGoalGraphPure = validateCompiledGoalGraph
 
+loadAgentRunnerMode :: IO AgentRunnerMode
+loadAgentRunnerMode = do
+  maybeRunner <- lookupEnv "SOG_AGENT_RUNNER"
+  case fmap Text.toLower (Text.pack <$> maybeRunner) of
+    Nothing -> pure HarnessAgentRunner
+    Just "" -> pure HarnessAgentRunner
+    Just "harness" -> pure HarnessAgentRunner
+    Just "api" -> pure HarnessAgentRunner
+    Just "codex" -> pure CodexAgentRunner
+    Just other -> fail ("unknown SOG_AGENT_RUNNER: " <> Text.unpack other)
+
 runSerialGoal
   :: ExperimentContext
   -> GoalGraph
@@ -388,6 +446,11 @@ runSerialGoal
   -> GoalNode
   -> IO (Either Text AgentRunResult)
 runSerialGoal context goalGraph summaries node = do
+  recordGraphSnapshot
+    context
+    "serial_goal_enter"
+    (Just ("enter " <> unGoalNodeId (goalNodeId node)))
+    goalGraph
   predecessorSummaries <-
     summariesFor summaries (goalPredecessors goalGraph (goalNodeId node))
   let prompt =
@@ -395,6 +458,19 @@ runSerialGoal context goalGraph summaries node = do
           (experimentUserPromptText context)
           predecessorSummaries
           node
+  case experimentAgentRunner context of
+    HarnessAgentRunner ->
+      runSerialHarnessGoal context summaries node prompt
+    CodexAgentRunner ->
+      runSerialCodexGoal context summaries node prompt
+
+runSerialHarnessGoal
+  :: ExperimentContext
+  -> Summaries
+  -> GoalNode
+  -> Text
+  -> IO (Either Text AgentRunResult)
+runSerialHarnessGoal context summaries node prompt = do
   state <-
     runHarness
       HarnessConfig
@@ -404,7 +480,7 @@ runSerialGoal context goalGraph summaries node = do
         , harnessUserPrompt = prompt
         , harnessTools = experimentToolsForRun context
         , harnessMaxTurns = 32
-        , harnessEventSink = appendEvent (experimentTracePath context)
+        , harnessEventSink = experimentEventSink context
         , harnessWorkflowSpec = experimentWorkflowSpec context
         }
   let
@@ -433,6 +509,110 @@ runSerialGoal context goalGraph summaries node = do
             )
         )
 
+runSerialCodexGoal
+  :: ExperimentContext
+  -> Summaries
+  -> GoalNode
+  -> Text
+  -> IO (Either Text AgentRunResult)
+runSerialCodexGoal context summaries node prompt = do
+  workspaceRoot <- normalise <$> getCurrentDirectory
+  let beforeWorkspace =
+        workspaceRoot
+          </> ".sog"
+          </> "serial"
+          </> Text.unpack (unGoalNodeId (goalNodeId node))
+          </> "before"
+  resetDirectory beforeWorkspace
+  copyWorkspaceTree workspaceRoot beforeWorkspace
+  codexResult <-
+    runCodexGoalProcess context workspaceRoot node prompt
+  changedPaths <- workspaceChangedPaths beforeWorkspace workspaceRoot
+  let
+    status = codexGoalStatus codexResult
+    summary = codexGoalSummary node codexResult
+    result =
+      AgentRunResult
+        { agentRunResultGoal = goalNodeId node
+        , agentRunResultStatus = status
+        , agentRunResultSummaryForDependents = summary
+        , agentRunResultReads = Set.empty
+        , agentRunResultWrites = Set.fromList changedPaths
+        , agentRunResultSnapshot = SnapshotId (unGoalNodeId (goalNodeId node))
+        }
+  if serialGoalStatusIsTerminal status
+    then do
+      rememberSummary summaries (goalNodeId node) summary
+      pure (Right result)
+    else
+      pure
+        ( Left
+            ( "serial codex goal "
+                <> unGoalNodeId (goalNodeId node)
+                <> " failed: "
+                <> status
+            )
+        )
+
+runCodexGoalProcess
+  :: ExperimentContext
+  -> FilePath
+  -> GoalNode
+  -> Text
+  -> IO CodexProcessResult
+runCodexGoalProcess context workspaceRoot node prompt = do
+  experimentEventSink context $
+    SubgoalStarted
+      { eventSubgoalId = unGoalNodeId (goalNodeId node)
+      , eventSubgoalName = goalNodeName node
+      }
+  result <-
+    runCodexProcess
+      (experimentCodexProcessConfig context)
+      (experimentEventSink context)
+      (Just (unGoalNodeId (goalNodeId node)))
+      workspaceRoot
+      (codexPrompt context prompt)
+  experimentEventSink context $
+    SubgoalEnded
+      { eventSubgoalId = unGoalNodeId (goalNodeId node)
+      , eventStatus = codexGoalStatus result
+      , eventSummary = Just (codexGoalSummary node result)
+      }
+  pure result
+
+codexPrompt :: ExperimentContext -> Text -> Text
+codexPrompt context prompt =
+  Text.intercalate
+    "\n\n"
+    [ "You are executing one SeaOfGoals task node inside an externally managed sandbox."
+    , "Use the instructions below as the task-specific developer guidance for this process. Work only in the current workspace unless the task explicitly requires inspection elsewhere."
+    , "SeaOfGoals instructions:"
+    , experimentSystemPromptText context
+    , "Task prompt:"
+    , prompt
+    , "When the task is finished, reply with a concise summary for dependent goals."
+    ]
+
+codexGoalStatus :: CodexProcessResult -> Text
+codexGoalStatus result
+  | codexProcessTimedOut result = "timeout"
+  | codexProcessExitCode result == 0 = "success"
+  | otherwise = "failed"
+
+codexGoalSummary :: GoalNode -> CodexProcessResult -> Text
+codexGoalSummary node result
+  | not (Text.null (Text.strip (codexProcessLastMessage result))) =
+      Text.strip (codexProcessLastMessage result)
+  | otherwise =
+      Text.intercalate
+        " "
+        [ "Goal"
+        , unGoalNodeId (goalNodeId node)
+        , "finished with status"
+        , codexGoalStatus result <> "."
+        ]
+
 runConcurrentGoal
   :: ExperimentContext
   -> GoalGraph
@@ -442,6 +622,11 @@ runConcurrentGoal
   -> GoalNode
   -> IO (Either Text AgentRunResult)
 runConcurrentGoal context goalGraph baseWorkspace summaries runsRef node = do
+  recordGraphSnapshot
+    context
+    "concurrent_goal_enter"
+    (Just ("enter " <> unGoalNodeId (goalNodeId node)))
+    goalGraph
   runIndex <- nextGoalRunIndex runsRef (goalNodeId node)
   let
     runSlug =
@@ -465,6 +650,21 @@ runConcurrentGoal context goalGraph baseWorkspace summaries runsRef node = do
           (experimentUserPromptText context)
           predecessorSummaries
           node
+  case experimentAgentRunner context of
+    HarnessAgentRunner ->
+      runConcurrentHarnessGoal context taskWorkspace tools node prompt
+    CodexAgentRunner ->
+      runConcurrentCodexGoal context baseWorkspace taskWorkspace node prompt
+
+runConcurrentHarnessGoal
+  :: ExperimentContext
+  -> FilePath
+  -> [ToolSpec]
+  -> GoalNode
+  -> Text
+  -> IO (Either Text AgentRunResult)
+runConcurrentHarnessGoal context taskWorkspace tools node prompt = do
+  baseWorkspace <- normalise <$> getCurrentDirectory
   state <-
     runHarness
       HarnessConfig
@@ -507,17 +707,64 @@ runConcurrentGoal context goalGraph baseWorkspace summaries runsRef node = do
             )
         )
 
+runConcurrentCodexGoal
+  :: ExperimentContext
+  -> FilePath
+  -> FilePath
+  -> GoalNode
+  -> Text
+  -> IO (Either Text AgentRunResult)
+runConcurrentCodexGoal context baseWorkspace taskWorkspace node prompt = do
+  codexResult <- runCodexGoalProcess context taskWorkspace node prompt
+  changedPaths <- workspaceChangedPaths baseWorkspace taskWorkspace
+  let
+    status = codexGoalStatus codexResult
+    summary = codexGoalSummary node codexResult
+    result =
+      AgentRunResult
+        { agentRunResultGoal = goalNodeId node
+        , agentRunResultStatus = status
+        , agentRunResultSummaryForDependents = summary
+        , agentRunResultReads = Set.empty
+        , agentRunResultWrites = Set.fromList changedPaths
+        , agentRunResultSnapshot =
+            SnapshotId
+              ( unGoalNodeId (goalNodeId node)
+                  <> ":"
+                  <> Text.pack taskWorkspace
+              )
+        }
+  if serialGoalStatusIsTerminal status
+    then pure (Right result)
+    else
+      pure
+        ( Left
+            ( "concurrent codex goal "
+                <> unGoalNodeId (goalNodeId node)
+                <> " failed: "
+                <> status
+            )
+        )
+
 mergeConcurrentGoal
   :: ExperimentContext
+  -> GoalGraph
   -> FilePath
   -> Summaries
   -> IORef (Map FilePath GoalNodeId)
   -> AgentRunResult
   -> IO (Either ConcurrentChaseConflict ())
-mergeConcurrentGoal context baseWorkspace summaries acceptedWritesRef result = do
+mergeConcurrentGoal context goalGraph baseWorkspace summaries acceptedWritesRef result = do
+  recordMergeGraphSnapshot context goalGraph "merge_before" result Nothing
   acceptedWrites <- readIORef acceptedWritesRef
   case firstWriteConflict acceptedWrites (agentRunResultWrites result) of
     Just (path, formerGoal) -> do
+      recordMergeGraphSnapshot
+        context
+        goalGraph
+        "merge_conflict"
+        result
+        (Just ("conflict on " <> Text.pack path <> " with " <> unGoalNodeId formerGoal))
       experimentEventSink context $
         EffectRecorded
           EffectRecord
@@ -556,7 +803,93 @@ mergeConcurrentGoal context baseWorkspace summaries acceptedWritesRef result = d
               (Set.toList (agentRunResultWrites result))
         )
       rememberMergeAccepted context result
+      recordMergeGraphSnapshot context goalGraph "merge_accept" result Nothing
       pure (Right ())
+
+recordDagSnapshot
+  :: ExperimentContext -> Text -> Maybe Text -> ChaseState -> IO ()
+recordDagSnapshot context phase reason state =
+  experimentEventSink context $
+    DagSnapshotObserved
+      { eventPhase = phase
+      , eventDagReason = reason
+      , eventDagNodes = graphNodeIds (chaseGraph state)
+      , eventDagEdges = graphEdges (chaseGraph state)
+      , eventDagQueued = textGoalSet (chaseQueued state)
+      , eventDagRunning = textGoalSet (chaseRunning state)
+      , eventDagCompleted = textGoalSet (Map.keysSet (chaseCompleted state))
+      , eventDagStatuses = chaseStatuses state
+      }
+
+recordGraphSnapshot
+  :: ExperimentContext -> Text -> Maybe Text -> GoalGraph -> IO ()
+recordGraphSnapshot context phase reason graph =
+  experimentEventSink context $
+    DagSnapshotObserved
+      { eventPhase = phase
+      , eventDagReason = reason
+      , eventDagNodes = graphNodeIds graph
+      , eventDagEdges = graphEdges graph
+      , eventDagQueued = textGoalSet (Map.keysSet (goalGraphNodes graph))
+      , eventDagRunning = Set.empty
+      , eventDagCompleted = Set.empty
+      , eventDagStatuses = Map.empty
+      }
+
+recordMergeGraphSnapshot
+  :: ExperimentContext
+  -> GoalGraph
+  -> Text
+  -> AgentRunResult
+  -> Maybe Text
+  -> IO ()
+recordMergeGraphSnapshot context graph phase result reason =
+  experimentEventSink context $
+    DagSnapshotObserved
+      { eventPhase = phase
+      , eventDagReason =
+          Just
+            ( Text.intercalate
+                "; "
+                ( filter
+                    (not . Text.null)
+                    [ "goal=" <> unGoalNodeId (agentRunResultGoal result)
+                    , fromMaybe "" reason
+                    ]
+                )
+            )
+      , eventDagNodes = graphNodeIds graph
+      , eventDagEdges = graphEdges graph
+      , eventDagQueued = Set.empty
+      , eventDagRunning = Set.singleton (unGoalNodeId (agentRunResultGoal result))
+      , eventDagCompleted = Set.empty
+      , eventDagStatuses =
+          Map.singleton (unGoalNodeId (agentRunResultGoal result)) phase
+      }
+
+graphNodeIds :: GoalGraph -> [Text]
+graphNodeIds graph =
+  fmap unGoalNodeId (Map.keys (goalGraphNodes graph))
+
+graphEdges :: GoalGraph -> [(Text, Text)]
+graphEdges graph =
+  [ (unGoalNodeId from, unGoalNodeId to)
+  | (from, to) <- Set.toList (goalGraphEdges graph)
+  ]
+
+textGoalSet :: Set GoalNodeId -> Set Text
+textGoalSet =
+  Set.map unGoalNodeId
+
+chaseStatuses :: ChaseState -> Map Text Text
+chaseStatuses state =
+  Map.unions
+    [ Map.fromSet (const "queued") (textGoalSet (chaseQueued state))
+    , Map.fromSet (const "running") (textGoalSet (chaseRunning state))
+    , Map.fromSet
+        (const "completed")
+        (textGoalSet (Map.keysSet (chaseCompleted state)))
+    ]
 
 firstWriteConflict
   :: Map FilePath GoalNodeId -> Set FilePath -> Maybe (FilePath, GoalNodeId)

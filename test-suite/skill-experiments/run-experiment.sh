@@ -51,17 +51,26 @@ fi
 workflow_suffix="--$SOG_SCHEDULER-sog"
 
 export SOG_CONFIG_FILE="${SOG_CONFIG_FILE:-$repo_root/seaofgoals.config.json}"
-export SOG_CONFIG="${SOG_CONFIG:-/seaofgoals.config.json}"
+export SOG_AGENT_RUNNER="${SOG_AGENT_RUNNER:-harness}"
+export SOG_EXPERIMENT_DRIVER="${SOG_EXPERIMENT_DRIVER:-docker}"
+export SOG_CODEX_HOME_HOST="${SOG_CODEX_HOME_HOST:-${CODEX_HOME:-$HOME/.codex}}"
+export SOG_CODEX_HOME="${SOG_CODEX_HOME:-/codex-home}"
+if [ "$SOG_EXPERIMENT_DRIVER" = "docker" ]; then
+  export SOG_CONFIG="${SOG_CONFIG:-/seaofgoals.config.json}"
+else
+  export SOG_CONFIG="${SOG_CONFIG:-$SOG_CONFIG_FILE}"
+fi
 
 if [ -z "${OPENAI_API_KEY:-}" ] && [ -f "$HOME/.secrets/openai" ]; then
   # shellcheck disable=SC1090
   source "$HOME/.secrets/openai"
 fi
 
-if [ -z "${OPENAI_API_KEY:-}" ]; then
+if [ "$SOG_AGENT_RUNNER" != "codex" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
   echo "OPENAI_API_KEY is not set, and $HOME/.secrets/openai did not set it." >&2
   exit 2
 fi
+export OPENAI_API_KEY="${OPENAI_API_KEY:-}"
 
 cd "$repo_root"
 cabal build test:SeaOfGoals-agent-runner
@@ -94,6 +103,16 @@ mv -Tf "$runs_dir/current.next" "$runs_dir/current"
 
 echo "Experiment workspace: $workspace_dir"
 echo "Current workspace symlink: $runs_dir/current -> workspaces/$run_id"
+
+if [ "$SOG_EXPERIMENT_DRIVER" = "host" ]; then
+  rm -rf "$workspace_dir"/*
+  cp -a "$experiment_dir/fixture/." "$workspace_dir/"
+  export SOG_TRACE_PATH="$workspace_dir/sog-trace.jsonl"
+  export SOG_CODEX_HOME="${SOG_CODEX_HOME_HOST}"
+  cd "$workspace_dir"
+  "$SOG_EXECUTABLE" "$(<"$experiment_dir/prompt.txt")"
+  exit 0
+fi
 
 cd "$experiment_dir"
 cleanup() {

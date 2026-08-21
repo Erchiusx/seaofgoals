@@ -20,6 +20,7 @@ Run from the repository root:
 make experiment-mysql2postgres
 make experiment-test-with-postgres
 make experiment-concurrent SKILL_EXPERIMENT=nextjs-performance
+make experiment-codex SKILL_EXPERIMENT=nextjs-performance
 ```
 
 `make experiment-concurrent SKILL_EXPERIMENT=...` sets
@@ -34,6 +35,28 @@ current test set, because it would require reasoning about Docker access from
 inside the runner environment.
 
 The runner sources `$HOME/.secrets/openai` automatically when `OPENAI_API_KEY` is not already set.
+
+Set `SOG_AGENT_RUNNER=codex` or use `make experiment-codex
+SKILL_EXPERIMENT=...` to execute each SeaOfGoals task node by launching
+`codex exec` inside the bwrap workspace sandbox. `make experiment-codex`
+uses `SOG_EXPERIMENT_DRIVER=host` by default, so it prepares the run workspace
+on the host and avoids the Docker runner layer. This mode uses the Codex
+account from `CODEX_HOME`/`$HOME/.codex` and does not require `OPENAI_API_KEY`
+in the Haskell harness. The trace records process-level start/finish events
+and workspace diffs rather than model API tool-call turns.
+
+To run the Codex-backed concurrent scheduler:
+
+```bash
+SOG_SCHEDULER=concurrent make experiment-codex SKILL_EXPERIMENT=nextjs-performance
+```
+
+Each run creates a fresh workspace under `<experiment>/runs/workspaces/` and
+updates `<experiment>/runs/current` to point at it. If a merge conflict is
+detected, the scheduler keeps the serially earlier result, updates the DAG, and
+reruns the serially later goal. The trace records `merge_conflict`,
+`merge_accept`, and `dag_snapshot` events so the recovery path can be inspected
+after the run.
 
 SeaOfGoals loads `seaofgoals.config.json` from the current directory by
 default. Set `SOG_CONFIG=/path/to/config.json` to use another config file. The

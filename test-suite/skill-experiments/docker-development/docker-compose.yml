@@ -9,6 +9,8 @@ services:
       SOG_TRACE_PATH: /workspace/sog-trace.jsonl
       SOG_CONFIG: ${SOG_CONFIG:-/seaofgoals.config.json}
       SOG_SCHEDULER: ${SOG_SCHEDULER:-serial}
+      SOG_AGENT_RUNNER: ${SOG_AGENT_RUNNER:-harness}
+      SOG_CODEX_HOME: ${SOG_CODEX_HOME:-/codex-home}
       SOG_SANDBOX: ${SOG_SANDBOX:-}
       SOG_SERIAL_GOALS_TEXT: ${SOG_SERIAL_GOALS_TEXT}
       SOG_SKILL_TEXT: ${SOG_SKILL_TEXT}
@@ -21,6 +23,7 @@ services:
       - ./runs/current:/workspace
       - ./prompt.txt:/prompt.txt:ro
       - ${SOG_CONFIG_FILE:?set SOG_CONFIG_FILE to the SeaOfGoals config file}:/seaofgoals.config.json:ro
+      - ${SOG_CODEX_HOME_HOST:?set SOG_CODEX_HOME_HOST to host CODEX_HOME}:/codex-home
     working_dir: /workspace
     command: >
       bash -lc 'find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf {} + && cp -a /seed/. /workspace/ && SeaOfGoals "$$(cat /prompt.txt)"'

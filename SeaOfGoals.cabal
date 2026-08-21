@@ -33,6 +33,7 @@ library
     exposed-modules:
         Agent.LLM.Transport
         Agent.SeaOfGoals.Config
+        Agent.SeaOfGoals.CodexProcess
         Agent.SeaOfGoals.Compile.Compiler
         Agent.SeaOfGoals.Compile.PromptTemplate
         Agent.SeaOfGoals.ExperimentRunner

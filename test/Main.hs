@@ -3,6 +3,12 @@ module Main (main) where
 import Agent.LLM.Transport
   ( TransportResponse (..)
   )
+import Agent.SeaOfGoals.CodexProcess
+  ( CodexProcessConfig (..)
+  , codexProcessExecSpec
+  , codexProcessView
+  , defaultCodexProcessConfig
+  )
 import Agent.SeaOfGoals.Compile.Compiler
   ( CompiledGoal (..)
   , CompiledGoalGraph (..)
@@ -175,6 +181,7 @@ main = do
   unicodeTransportResponseBodyTest
   configFileTest
   compilerGraphValidationTest
+  codexProcessCommandTest
   bwrapCommandRenderingTest
   containerdCommandRenderingTest
   fuseStoreWorkspaceTest
@@ -301,6 +308,41 @@ compilerGraphValidationTest = do
   assertBool
     "compiler DAG rejects cycle"
     (not (null (validateCompiledGoalGraph cyclicCompilerGraph)))
+
+codexProcessCommandTest :: IO ()
+codexProcessCommandTest = do
+  defaults <- defaultCodexProcessConfig
+  let
+    config =
+      defaults
+        { codexProcessBwrapBinary = "bwrap"
+        , codexProcessHostCodexHome = "/host/codex-home"
+        , codexProcessSandboxCodexBinary = "/codex-home/bin/codex"
+        , codexProcessModel = "gpt-test"
+        }
+    spec =
+      codexProcessExecSpec
+        config
+        "/workspace/.sog/prompt.txt"
+        "/workspace/.sog/last.txt"
+    view = codexProcessView config "/tmp/workspace"
+    command = Bwrap.bwrapCommand (Bwrap.Config "bwrap") view spec
+    rendered = Text.pack (unwords command)
+  assertBool
+    "codex command runs through bwrap"
+    ("bwrap" `elem` command)
+  assertBool
+    "codex home is mounted"
+    (hasSubsequence ["--bind", "/host/codex-home", "/codex-home"] command)
+  assertBool
+    "codex exec reads prompt from sandbox workspace"
+    ("/workspace/.sog/prompt.txt" `Text.isInfixOf` rendered)
+  assertBool
+    "codex exec writes last message in sandbox workspace"
+    ("/workspace/.sog/last.txt" `Text.isInfixOf` rendered)
+  assertBool
+    "codex exec receives model through environment"
+    (hasSubsequence ["--setenv", "SOG_MODEL", "gpt-test"] command)
 
 bwrapCommandRenderingTest :: IO ()
 bwrapCommandRenderingTest = do

@@ -12,6 +12,7 @@ import Data.Aeson
   , (.=)
   )
 import Data.Aeson.Types (Pair)
+import Data.Map.Strict (Map)
 import Data.Set (Set)
 import Data.Text (Text)
 
@@ -70,6 +71,30 @@ data HarnessEvent
       , eventSkippedNodes :: Set Text
       , eventTransitionWarnings :: [Text]
       }
+  | ProcessStarted
+      { eventProcessKind :: Text
+      , eventGoalId :: Maybe Text
+      , eventCommand :: [Text]
+      , eventWorkspace :: Maybe FilePath
+      }
+  | ProcessFinished
+      { eventProcessKind :: Text
+      , eventGoalId :: Maybe Text
+      , eventExitCode :: Int
+      , eventTimedOut :: Bool
+      , eventStdout :: Text
+      , eventStderr :: Text
+      }
+  | DagSnapshotObserved
+      { eventPhase :: Text
+      , eventDagReason :: Maybe Text
+      , eventDagNodes :: [Text]
+      , eventDagEdges :: [(Text, Text)]
+      , eventDagQueued :: Set Text
+      , eventDagRunning :: Set Text
+      , eventDagCompleted :: Set Text
+      , eventDagStatuses :: Map Text Text
+      }
   | HarnessFinished
       { eventReason :: Text
       }
@@ -127,6 +152,36 @@ instance ToJSON HarnessEvent where
           , "skipped_nodes" .= skipped
           , "transition_warnings" .= warnings
           ]
+      ProcessStarted processKind goalId command workspace ->
+        base
+          "process_started"
+          [ "process_kind" .= processKind
+          , "goal_id" .= goalId
+          , "command" .= command
+          , "workspace" .= workspace
+          ]
+      ProcessFinished processKind goalId exitCode timedOut stdoutText stderrText ->
+        base
+          "process_finished"
+          [ "process_kind" .= processKind
+          , "goal_id" .= goalId
+          , "exit_code" .= exitCode
+          , "timed_out" .= timedOut
+          , "stdout" .= stdoutText
+          , "stderr" .= stderrText
+          ]
+      DagSnapshotObserved phase reason nodes edges queued running completed statuses ->
+        base
+          "dag_snapshot"
+          [ "phase" .= phase
+          , "reason" .= reason
+          , "nodes" .= nodes
+          , "edges" .= edges
+          , "queued" .= queued
+          , "running" .= running
+          , "completed" .= completed
+          , "statuses" .= statuses
+          ]
       HarnessFinished reason ->
         base "harness_finished" ["reason" .= reason]
    where
@@ -144,4 +199,7 @@ eventType event =
     SubgoalEnded{} -> "subgoal_ended"
     EffectRecorded{} -> "effect_recorded"
     WorkflowStatusObserved{} -> "workflow_status"
+    ProcessStarted{} -> "process_started"
+    ProcessFinished{} -> "process_finished"
+    DagSnapshotObserved{} -> "dag_snapshot"
     HarnessFinished{} -> "harness_finished"
