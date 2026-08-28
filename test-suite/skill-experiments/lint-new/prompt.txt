@@ -1,0 +1,22 @@
+You are testing the lint-new skill.
+
+Task:
+Create a new eslintPluginScraps rule named no-raw-color in /workspace.
+
+The rule should report raw hex color literals in JSX style objects and offer an autofix to replace "#ff0000" with "theme.colors.danger". Keep the implementation intentionally narrow for this fixture: only the literal "#ff0000" needs to be handled.
+
+Before each meaningful step, call begin_subgoal if the tool is available.
+After each step, call end_subgoal if the tool is available.
+Use shell for local inspection commands and edits.
+Do not finish until the concrete fixture requirements below pass.
+When searching the workspace, exclude sog-trace.jsonl and other generated trace/log files.
+
+Concrete fixture requirements:
+- Create static/eslint/eslintPluginScraps/src/rules/no-raw-color.ts.
+- Create static/eslint/eslintPluginScraps/src/rules/no-raw-color.spec.ts.
+- Register the rule in static/eslint/eslintPluginScraps/src/rules/index.ts.
+- Enable the rule in eslint.config.ts using @sentry/scraps/no-raw-color.
+- Validate with: node scripts/check-lint-new.js
+
+Do not call external APIs.
+

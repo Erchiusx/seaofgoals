@@ -1,0 +1,13 @@
+{
+  "name": "sog-lint-new-fixture",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node scripts/check-lint-new.js"
+  },
+  "devDependencies": {
+    "@typescript-eslint/rule-tester": "latest",
+    "@typescript-eslint/utils": "latest"
+  }
+}
+
