@@ -4,10 +4,10 @@ SKILL_PATH ?=
 COMPILED_GOALS_OUT ?= compiled-goals.json
 SCFG_PYTHON ?= /home/erchius/development/scfg/scfg-package/.venv/bin/python
 
-.PHONY: lint test compile-skill build-workflows smoke-containerd smoke-bwrap experiment experiment-concurrent experiment-codex experiment-no-scfg experiment-nextjs-performance experiment-database-migrations experiment-mysql2postgres experiment-test-with-postgres experiment-docker-development experiments experiments-no-scfg view-trace
+.PHONY: lint test compile-skill compile-skill-bootstrap build-workflows smoke-containerd smoke-bwrap experiment experiment-concurrent experiment-codex experiment-no-scfg experiment-nextjs-performance experiment-database-migrations experiment-mysql2postgres experiment-test-with-postgres experiment-docker-development experiments experiments-no-scfg view-trace
 
 lint:
-	fourmolu --config ./fourmolu.yaml -i lib/ test/ test-suite/agent-runner/ compiler/ smoke/ test-fuse/
+	fourmolu --config ./fourmolu.yaml -i lib/ test/ test-suite/agent-runner/ compiler/ compiler-bootstrap/ smoke/ test-fuse/
 
 test:
 	cabal test
@@ -15,6 +15,10 @@ test:
 compile-skill:
 	test -n "$(SKILL_PATH)"
 	cabal run exe:SeaOfGoals-compiler -- "$(SKILL_PATH)" "$(COMPILED_GOALS_OUT)" "$(SKILL_NAME)"
+
+compile-skill-bootstrap:
+	test -n "$(SKILL_PATH)"
+	cabal run exe:SeaOfGoals-compiler-bootstrap -- "$(SKILL_PATH)" "$(COMPILED_GOALS_OUT)" "$(SKILL_NAME)"
 
 build-workflows:
 	$(SCFG_PYTHON) test-suite/skill-experiments/build-workflows.py

@@ -2,11 +2,18 @@ module Agent.SeaOfGoals.Compile.Compiler
   ( CompiledGoal (..)
   , CompiledGoalGraph (..)
   , compileSkill
+  , compilerCodexPrompt
+  , parseCompiledGoalGraphText
   , runCompilerFromArgs
   , validateCompiledGoalGraph
   )
 where
 
+import Agent.SeaOfGoals.CodexProcess
+  ( CodexProcessResult (..)
+  , loadCodexProcessConfigFromEnv
+  , runCodexProcess
+  )
 import Agent.SeaOfGoals.Compile.PromptTemplate (embedTextFile)
 import Agent.SeaOfGoals.LLM
   ( LLMContentPart (TextPart)
@@ -33,6 +40,7 @@ import Data.Aeson
   , (.=)
   )
 import Data.ByteString.Lazy qualified as LazyByteString
+import Data.List (sortOn)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Set qualified as Set
@@ -40,10 +48,12 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Text.IO qualified as TextIO
-import System.Directory (createDirectoryIfMissing)
+import Data.Time.Clock.POSIX (getPOSIXTime)
+import System.Directory (createDirectoryIfMissing, getTemporaryDirectory)
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (exitFailure)
-import System.FilePath (takeDirectory)
+import System.FilePath (takeDirectory, (</>))
+import System.Posix.Process (getProcessID)
 
 data CompiledGoal = CompiledGoal
   { compiledGoalId :: Text
@@ -108,29 +118,93 @@ runCompilerFromArgs = do
 
 runCompiler :: FilePath -> FilePath -> Maybe Text -> IO ()
 runCompiler skillPath outputPath maybeSkillName = do
+  runner <- lookupEnv "SOG_COMPILER_RUNNER"
   apiKey <- lookupEnv "OPENAI_API_KEY"
-  case apiKey of
-    Nothing -> do
-      putStrLn "OPENAI_API_KEY is not set."
+  skillText <- TextIO.readFile skillPath
+  model <- Text.pack . fromMaybe "gpt-5.5" <$> lookupEnv "SOG_MODEL"
+  let skillName = fromMaybe "skill" maybeSkillName
+  result <-
+    case runner of
+      Just "codex" -> compileSkillWithCodex skillName skillText
+      _ ->
+        case apiKey of
+          Nothing -> do
+            putStrLn "OPENAI_API_KEY is not set."
+            exitFailure
+          Just key -> do
+            let backend =
+                  GPTBackend
+                    { gptApiKey = key
+                    , gptEndpoint = defaultGPTEndpoint
+                    }
+            compileSkill backend model skillName skillText
+  case result of
+    Left err -> do
+      putStrLn ("Could not compile skill: " <> Text.unpack err)
       exitFailure
-    Just key -> do
-      skillText <- TextIO.readFile skillPath
-      model <- Text.pack . fromMaybe "gpt-5.5" <$> lookupEnv "SOG_MODEL"
-      let backend =
-            GPTBackend
-              { gptApiKey = key
-              , gptEndpoint = defaultGPTEndpoint
-              }
-      result <-
-        compileSkill backend model (fromMaybe "skill" maybeSkillName) skillText
-      case result of
-        Left err -> do
-          putStrLn ("Could not compile skill: " <> Text.unpack err)
-          exitFailure
-        Right graph -> do
-          createDirectoryIfMissing True (takeDirectory outputPath)
-          LazyByteString.writeFile outputPath (encode graph <> "\n")
-          putStrLn ("Compiled goals written to " <> outputPath)
+    Right graph -> do
+      createDirectoryIfMissing True (takeDirectory outputPath)
+      LazyByteString.writeFile outputPath (encode graph <> "\n")
+      putStrLn ("Compiled goals written to " <> outputPath)
+
+compileSkillWithCodex :: Text -> Text -> IO (Either Text CompiledGoalGraph)
+compileSkillWithCodex skillName skillText = do
+  config <- loadCodexProcessConfigFromEnv
+  workspace <- compilerCodexWorkspace skillName
+  let prompt = compilerCodexPrompt skillName skillText
+  result <- runCodexProcess config (\_event -> pure ()) Nothing workspace prompt
+  if codexProcessTimedOut result
+    then pure (Left "codex compiler run timed out")
+    else
+      if codexProcessExitCode result /= 0
+        then
+          pure
+            ( Left
+                ( "codex compiler run failed: "
+                    <> Text.strip (codexProcessStderr result)
+                )
+            )
+        else
+          pure
+            ( parseCompiledGoalGraphText
+                ( firstNonEmptyText
+                    (codexProcessLastMessage result)
+                    (codexProcessStdout result)
+                )
+            )
+
+compilerCodexWorkspace :: Text -> IO FilePath
+compilerCodexWorkspace skillName = do
+  tmp <- getTemporaryDirectory
+  pid <- getProcessID
+  now <- round . (* 1000000) <$> getPOSIXTime
+  let
+    safeName =
+      Text.unpack
+        (Text.map (\c -> if c == '/' || c == ' ' then '-' else c) skillName)
+    workspace =
+      tmp
+        </> "sog-compiler-codex-"
+          <> safeName
+          <> "-"
+          <> show pid
+          <> "-"
+          <> show (now :: Integer)
+  createDirectoryIfMissing True workspace
+  pure workspace
+
+compilerCodexPrompt :: Text -> Text -> Text
+compilerCodexPrompt skillName skillText =
+  Text.unlines
+    [ "You are running the SeaOfGoals skill compiler."
+    , "Follow the system instructions exactly and return only the requested JSON object."
+    , ""
+    , "System instructions:"
+    , compilerSystemPrompt
+    , ""
+    , "User request:"
+    , compilerUserPrompt skillName skillText
+    ]
 
 compileSkill
   :: LLM.LLM provider
@@ -180,16 +254,111 @@ compileSkill provider model skillName skillText = do
 
 parseCompiledGoalGraph :: LLMMessage -> Either Text CompiledGoalGraph
 parseCompiledGoalGraph message = do
+  parseCompiledGoalGraphText (messageText message)
+
+parseCompiledGoalGraphText :: Text -> Either Text CompiledGoalGraph
+parseCompiledGoalGraphText rawText = do
   graph <-
     case eitherDecode
-      (LazyByteString.fromStrict (TextEncoding.encodeUtf8 (messageText message))) of
+      (LazyByteString.fromStrict (TextEncoding.encodeUtf8 (extractJsonObject rawText))) of
       Left err ->
         Left
           ("model response is not a compiled goal graph JSON object: " <> Text.pack err)
       Right value -> Right value
   case validateCompiledGoalGraph graph of
-    [] -> Right graph
+    [] -> Right (topologicallySortCompiledGoalGraph graph)
     errors -> Left (Text.intercalate "; " errors)
+
+topologicallySortCompiledGoalGraph :: CompiledGoalGraph -> CompiledGoalGraph
+topologicallySortCompiledGoalGraph graph =
+  graph{compiledGoals = reverse (go [] [] ready0)}
+ where
+  goals = compiledGoals graph
+  goalMap = Map.fromList [(compiledGoalId goal, goal) | goal <- goals]
+  goalOrder =
+    Map.fromList
+      [(compiledGoalId goal, index) | (index, goal) <- zip [0 :: Int ..] goals]
+  successors =
+    Map.fromListWith
+      (<>)
+      [ (predecessor, [compiledGoalId goal])
+      | goal <- goals
+      , predecessor <- compiledGoalPredecessors goal
+      ]
+  ready0 =
+    sortGoalIds
+      [compiledGoalId goal | goal <- goals, null (compiledGoalPredecessors goal)]
+
+  go sorted _seen [] = sorted
+  go sorted seen (current : rest) =
+    let
+      sorted' = Map.findWithDefault (error "missing goal") current goalMap : sorted
+      seen' = current : seen
+      newlyReady =
+        [ successor
+        | successor <- Map.findWithDefault [] current successors
+        , successor `notElem` seen'
+        , all (`elem` seen') (compiledGoalPredecessors (goalMap Map.! successor))
+        ]
+      rest' = sortGoalIds (rest <> newlyReady)
+     in
+      go sorted' seen' rest'
+
+  sortGoalIds =
+    sortOn (\goalId -> Map.findWithDefault maxBound goalId goalOrder) . uniqueText
+
+uniqueText :: [Text] -> [Text]
+uniqueText =
+  go Set.empty
+ where
+  go _ [] = []
+  go seen (item : rest)
+    | item `Set.member` seen = go seen rest
+    | otherwise = item : go (Set.insert item seen) rest
+
+extractJsonObject :: Text -> Text
+extractJsonObject text =
+  case Text.findIndex (== '{') text of
+    Nothing -> text
+    Just start ->
+      let candidate = Text.drop start text
+       in fromMaybe candidate (balancedPrefix candidate)
+
+balancedPrefix :: Text -> Maybe Text
+balancedPrefix text =
+  go 0 0 False False
+ where
+  go :: Int -> Int -> Bool -> Bool -> Maybe Text
+  go index depth inString escaped
+    | index >= Text.length text = Nothing
+    | otherwise =
+        let
+          c = Text.index text index
+          nextIndex = index + 1
+         in
+          if inString
+            then
+              if escaped
+                then go nextIndex depth True False
+                else case c of
+                  '\\' -> go nextIndex depth True True
+                  '"' -> go nextIndex depth False False
+                  _ -> go nextIndex depth True False
+            else case c of
+              '"' -> go nextIndex depth True False
+              '{' -> go nextIndex (depth + 1) False False
+              '}' ->
+                let nextDepth = depth - 1
+                 in if nextDepth == 0
+                      then Just (Text.take nextIndex text)
+                      else go nextIndex nextDepth False False
+              _ -> go nextIndex depth False False
+
+firstNonEmptyText :: Text -> Text -> Text
+firstNonEmptyText first second =
+  if Text.null (Text.strip first)
+    then second
+    else first
 
 validateCompiledGoalGraph :: CompiledGoalGraph -> [Text]
 validateCompiledGoalGraph graph =

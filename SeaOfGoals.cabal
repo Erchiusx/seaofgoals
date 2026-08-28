@@ -24,6 +24,7 @@ common warnings
     ghc-options: -Wall
     default-extensions:
         OverloadedStrings
+        ImportQualifiedPost
         ScopedTypeVariables
         TemplateHaskell
         TypeFamilies
@@ -34,6 +35,7 @@ library
         Agent.LLM.Transport
         Agent.SeaOfGoals.Config
         Agent.SeaOfGoals.CodexProcess
+        Agent.SeaOfGoals.Compile.Bootstrap
         Agent.SeaOfGoals.Compile.Compiler
         Agent.SeaOfGoals.Compile.PromptTemplate
         Agent.SeaOfGoals.ExperimentRunner
@@ -101,6 +103,15 @@ executable SeaOfGoals-compiler
         base ^>=4.21.0.0,
         SeaOfGoals
     hs-source-dirs:   compiler
+    default-language: GHC2024
+
+executable SeaOfGoals-compiler-bootstrap
+    import:           warnings
+    main-is:          Main.hs
+    build-depends:
+        base ^>=4.21.0.0,
+        SeaOfGoals
+    hs-source-dirs:   compiler-bootstrap
     default-language: GHC2024
 
 executable SeaOfGoals-fuse-mount-smoke

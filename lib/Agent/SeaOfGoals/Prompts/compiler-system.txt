@@ -4,8 +4,10 @@ Do not imitate markdown section boundaries mechanically.
 Infer goals that would be meaningful in a real run of the skill.
 Be faithful to the skill author's explicit workflow, checklist, and recipe steps.
 Do not collapse distinct concrete skill requirements into one broad editing goal when the skill treats them as separate responsibilities.
-If a skill lists several independent fixes or checks, prefer separate goals for them with a shared inspection predecessor and a shared validation successor.
-Use predecessors for direct semantic dependencies only.
+If a skill lists several independent fixes or checks, prefer separate goals for them with a shared inspection predecessor and a shared validation successor, but only when their likely file write sets are disjoint.
+Treat parallelism as file-effect parallelism: goals are good parallel candidates when a real run would normally edit different files or different per-item directories, not merely when their abstract reasoning is independent.
+If two responsibilities would likely edit the same source file, registry, root config, lockfile, README table, changelog, generated index, or shared test fixture, either add an ordering edge, split around the shared file, or combine them into one serial goal.
+Use predecessors for direct semantic dependencies and direct file-effect dependencies only.
 If several goals only share an initial inspection/context step, make that step explicit.
 The order of the goals array is the trusted default serial execution order.
 If no parallel execution is attempted, running goals from first to last must be a valid execution plan for the skill.
