@@ -24,6 +24,10 @@ import Agent.SeaOfGoals.Workspace.Sandbox
   , SandboxExecOutcome (..)
   )
 import Control.Monad (forM_, when)
+import Data.Aeson
+  ( Value
+  , eitherDecodeStrict
+  )
 import Data.ByteString qualified as ByteString
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -155,6 +159,7 @@ runCodexProcess config eventSink goalId workspaceRoot prompt = do
         }
   lastMessage <- readTextFileIfExists lastMessagePath
   let result = codexProcessResultFromOutcome outcome lastMessage
+  emitCodexRawEvents eventSink goalId (codexProcessStdout result)
   eventSink
     ProcessFinished
       { eventProcessKind = "codex"
@@ -307,6 +312,24 @@ truncateTraceText :: Text -> Text
 truncateTraceText text
   | Text.length text <= 20000 = text
   | otherwise = Text.take 20000 text <> "\n... truncated ..."
+
+emitCodexRawEvents :: (HarnessEvent -> IO ()) -> Maybe Text -> Text -> IO ()
+emitCodexRawEvents eventSink goalId stdoutText =
+  forM_ (Text.lines stdoutText) $ \line ->
+    case parseCodexJsonLine line of
+      Nothing -> pure ()
+      Just rawEvent ->
+        eventSink
+          CodexEventObserved
+            { eventGoalId = goalId
+            , eventCodexRawEvent = rawEvent
+            }
+
+parseCodexJsonLine :: Text -> Maybe Value
+parseCodexJsonLine line =
+  case eitherDecodeStrict (TextEncoding.encodeUtf8 line) of
+    Left _ -> Nothing
+    Right value -> Just value
 
 firstNonEmpty :: String -> [Maybe String] -> String
 firstNonEmpty fallback values =

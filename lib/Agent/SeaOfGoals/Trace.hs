@@ -85,6 +85,10 @@ data HarnessEvent
       , eventStdout :: Text
       , eventStderr :: Text
       }
+  | CodexEventObserved
+      { eventGoalId :: Maybe Text
+      , eventCodexRawEvent :: Value
+      }
   | DagSnapshotObserved
       { eventPhase :: Text
       , eventDagReason :: Maybe Text
@@ -170,6 +174,12 @@ instance ToJSON HarnessEvent where
           , "stdout" .= stdoutText
           , "stderr" .= stderrText
           ]
+      CodexEventObserved goalId rawEvent ->
+        base
+          "codex_event"
+          [ "goal_id" .= goalId
+          , "raw_event" .= rawEvent
+          ]
       DagSnapshotObserved phase reason nodes edges queued running completed statuses ->
         base
           "dag_snapshot"
@@ -201,5 +211,6 @@ eventType event =
     WorkflowStatusObserved{} -> "workflow_status"
     ProcessStarted{} -> "process_started"
     ProcessFinished{} -> "process_finished"
+    CodexEventObserved{} -> "codex_event"
     DagSnapshotObserved{} -> "dag_snapshot"
     HarnessFinished{} -> "harness_finished"
