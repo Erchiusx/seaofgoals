@@ -6,6 +6,7 @@ module Agent.SeaOfGoals.CodexProcess
   , defaultCodexProcessConfig
   , loadCodexProcessConfigFromEnv
   , runCodexProcess
+  , runCodexProcessWithControlRoot
   )
 where
 
@@ -15,7 +16,7 @@ import Agent.SeaOfGoals.Trace
 import Agent.SeaOfGoals.Workspace.Bwrap.Command qualified as BwrapCommand
 import Agent.SeaOfGoals.Workspace.ProcessExec
   ( ProcessExecSpec (..)
-  , runProcessExec
+  , runProcessExecWithStdoutLineSink
   )
 import Agent.SeaOfGoals.Workspace.Sandbox
   ( BindMode (..)
@@ -128,18 +129,36 @@ runCodexProcess
   -> Text
   -> IO CodexProcessResult
 runCodexProcess config eventSink goalId workspaceRoot prompt = do
+  runCodexProcessWithControlRoot
+    config
+    eventSink
+    goalId
+    workspaceRoot
+    (defaultCodexControlRoot workspaceRoot)
+    prompt
+
+runCodexProcessWithControlRoot
+  :: CodexProcessConfig
+  -> (HarnessEvent -> IO ())
+  -> Maybe Text
+  -> FilePath
+  -> FilePath
+  -> Text
+  -> IO CodexProcessResult
+runCodexProcessWithControlRoot config eventSink goalId workspaceRoot controlRoot prompt = do
   let
-    promptPath = workspaceRoot </> ".sog" </> "codex-goal-prompt.txt"
-    lastMessagePath = workspaceRoot </> ".sog" </> "codex-last-message.txt"
-    view = codexProcessView config workspaceRoot
+    promptPath = controlRoot </> "codex-goal-prompt.txt"
+    lastMessagePath = controlRoot </> "codex-last-message.txt"
+    historyPath = controlRoot </> "codex-history.jsonl"
+    view = codexProcessViewWithControlRoot config workspaceRoot controlRoot
     spec =
       codexProcessExecSpec
         config
-        "/workspace/.sog/codex-goal-prompt.txt"
-        "/workspace/.sog/codex-last-message.txt"
+        "/sog-control/codex-goal-prompt.txt"
+        "/sog-control/codex-last-message.txt"
     command = BwrapCommand.bwrapCommand (bwrapConfig config) view spec
   validateCodexHome config
-  prepareCodexWorkspaceDirs workspaceRoot
+  prepareCodexWorkspaceDirs controlRoot
   createDirectoryIfMissing True (takeDirectory promptPath)
   TextIO.writeFile promptPath prompt
   eventSink
@@ -150,16 +169,17 @@ runCodexProcess config eventSink goalId workspaceRoot prompt = do
       , eventWorkspace = Just workspaceRoot
       }
   outcome <-
-    runProcessExec
+    runProcessExecWithStdoutLineSink
       ProcessExecSpec
         { processExecArgv = command
         , processExecCwd = Nothing
         , processExecEnv = Nothing
         , processExecTimeout = codexProcessTimeout config
         }
+      (emitCodexRawEvent eventSink goalId)
   lastMessage <- readTextFileIfExists lastMessagePath
   let result = codexProcessResultFromOutcome outcome lastMessage
-  emitCodexRawEvents eventSink goalId (codexProcessStdout result)
+  TextIO.writeFile historyPath (codexProcessStdout result)
   eventSink
     ProcessFinished
       { eventProcessKind = "codex"
@@ -174,12 +194,29 @@ runCodexProcess config eventSink goalId workspaceRoot prompt = do
 codexProcessView
   :: CodexProcessConfig -> FilePath -> BwrapCommand.ExecutionView
 codexProcessView config workspaceRoot =
+  codexProcessViewWithControlRoot
+    config
+    workspaceRoot
+    (defaultCodexControlRoot workspaceRoot)
+
+defaultCodexControlRoot :: FilePath -> FilePath
+defaultCodexControlRoot workspaceRoot =
+  workspaceRoot <> ".sog-control"
+
+codexProcessViewWithControlRoot
+  :: CodexProcessConfig -> FilePath -> FilePath -> BwrapCommand.ExecutionView
+codexProcessViewWithControlRoot config workspaceRoot controlRoot =
   BwrapCommand.ExecutionView
     { BwrapCommand.viewHostRoot = BwrapCommand.ReadOnlyHostRoot
     , BwrapCommand.viewMounts =
         [ BwrapCommand.Mount
             { BwrapCommand.mountHostPath = workspaceRoot
             , BwrapCommand.mountSandboxPath = "/workspace"
+            , BwrapCommand.mountMode = BindReadWrite
+            }
+        , BwrapCommand.Mount
+            { BwrapCommand.mountHostPath = controlRoot
+            , BwrapCommand.mountSandboxPath = "/sog-control"
             , BwrapCommand.mountMode = BindReadWrite
             }
         , BwrapCommand.Mount
@@ -193,17 +230,17 @@ codexProcessView config workspaceRoot =
             , BwrapCommand.mountMode = BindReadOnly
             }
         , BwrapCommand.Mount
-            { BwrapCommand.mountHostPath = workspaceRoot </> ".sog" </> "codex-home"
+            { BwrapCommand.mountHostPath = controlRoot </> "codex-home"
             , BwrapCommand.mountSandboxPath = "/home/sog"
             , BwrapCommand.mountMode = BindReadWrite
             }
         , BwrapCommand.Mount
-            { BwrapCommand.mountHostPath = workspaceRoot </> ".sog" </> "codex-cache"
+            { BwrapCommand.mountHostPath = controlRoot </> "codex-cache"
             , BwrapCommand.mountSandboxPath = "/cache"
             , BwrapCommand.mountMode = BindReadWrite
             }
         , BwrapCommand.Mount
-            { BwrapCommand.mountHostPath = workspaceRoot </> ".sog" </> "codex-tmp"
+            { BwrapCommand.mountHostPath = controlRoot </> "codex-tmp"
             , BwrapCommand.mountSandboxPath = "/tmp"
             , BwrapCommand.mountMode = BindReadWrite
             }
@@ -280,11 +317,12 @@ findHostCodexBinary = do
     Just path -> canonicalizePath path
 
 prepareCodexWorkspaceDirs :: FilePath -> IO ()
-prepareCodexWorkspaceDirs workspaceRoot =
+prepareCodexWorkspaceDirs controlRoot =
   forM_
-    [ workspaceRoot </> ".sog" </> "codex-home"
-    , workspaceRoot </> ".sog" </> "codex-cache"
-    , workspaceRoot </> ".sog" </> "codex-tmp"
+    [ controlRoot
+    , controlRoot </> "codex-home"
+    , controlRoot </> "codex-cache"
+    , controlRoot </> "codex-tmp"
     ]
     (createDirectoryIfMissing True)
 
@@ -313,17 +351,17 @@ truncateTraceText text
   | Text.length text <= 20000 = text
   | otherwise = Text.take 20000 text <> "\n... truncated ..."
 
-emitCodexRawEvents :: (HarnessEvent -> IO ()) -> Maybe Text -> Text -> IO ()
-emitCodexRawEvents eventSink goalId stdoutText =
-  forM_ (Text.lines stdoutText) $ \line ->
-    case parseCodexJsonLine line of
-      Nothing -> pure ()
-      Just rawEvent ->
-        eventSink
-          CodexEventObserved
-            { eventGoalId = goalId
-            , eventCodexRawEvent = rawEvent
-            }
+emitCodexRawEvent
+  :: (HarnessEvent -> IO ()) -> Maybe Text -> ByteString.ByteString -> IO ()
+emitCodexRawEvent eventSink goalId line =
+  case parseCodexJsonLine (TextEncoding.decodeUtf8Lenient line) of
+    Nothing -> pure ()
+    Just rawEvent ->
+      eventSink
+        CodexEventObserved
+          { eventGoalId = goalId
+          , eventCodexRawEvent = rawEvent
+          }
 
 parseCodexJsonLine :: Text -> Maybe Value
 parseCodexJsonLine line =

@@ -64,7 +64,7 @@ def resolve_trace_path(target):
         return path
 
     root = Path(__file__).resolve().parent
-    experiment_trace = root / target / "runs" / "current" / "sog-trace.jsonl"
+    experiment_trace = root / target / "runs" / "control-current" / "sog-trace.jsonl"
     if experiment_trace.is_file():
         return experiment_trace
 

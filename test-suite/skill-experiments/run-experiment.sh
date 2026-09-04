@@ -49,6 +49,9 @@ if [ "$SOG_SCHEDULER" = "concurrent" ]; then
   export SOG_SANDBOX="${SOG_SANDBOX:-bwrap}"
 fi
 workflow_suffix="--$SOG_SCHEDULER-sog"
+if [ "${SOG_PRELOAD_GOAL_CONTEXT:-}" = "1" ] || [ "${SOG_PRELOAD_GOAL_CONTEXT:-}" = "true" ]; then
+  workflow_suffix="$workflow_suffix--preload-context"
+fi
 
 export SOG_CONFIG_FILE="${SOG_CONFIG_FILE:-$repo_root/seaofgoals.config.json}"
 export SOG_AGENT_RUNNER="${SOG_AGENT_RUNNER:-harness}"
@@ -73,19 +76,21 @@ fi
 export OPENAI_API_KEY="${OPENAI_API_KEY:-}"
 
 cd "$repo_root"
-cabal build test:SeaOfGoals-agent-runner
+cabal build ${SOG_CABAL_FLAGS:-} test:SeaOfGoals-agent-runner
 export SOG_EXECUTABLE
-SOG_EXECUTABLE="$(cabal list-bin test:SeaOfGoals-agent-runner)"
+SOG_EXECUTABLE="$(cabal list-bin ${SOG_CABAL_FLAGS:-} test:SeaOfGoals-agent-runner)"
 export SOG_RUNNER_UID="${SOG_RUNNER_UID:-$(id -u)}"
 export SOG_RUNNER_GID="${SOG_RUNNER_GID:-$(id -g)}"
 
 runs_dir="$experiment_dir/runs"
 workspaces_dir="$runs_dir/workspaces"
+controls_dir="$runs_dir/control"
 run_timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 run_id="${SOG_RUN_ID:-$(new_uuid)--$run_timestamp--$experiment_name$workflow_suffix}"
 workspace_dir="$workspaces_dir/$run_id"
+control_dir="$controls_dir/$run_id"
 
-mkdir -p "$workspaces_dir"
+mkdir -p "$workspaces_dir" "$controls_dir"
 
 if [ -e "$runs_dir/current" ] && [ ! -L "$runs_dir/current" ]; then
   migrated_id="$(new_uuid)--$run_timestamp--$experiment_name--migrated-current"
@@ -98,16 +103,22 @@ if [ -e "$workspace_dir" ]; then
 fi
 
 mkdir -p "$workspace_dir"
+mkdir -p "$control_dir"
 ln -sfn "workspaces/$run_id" "$runs_dir/current.next"
 mv -Tf "$runs_dir/current.next" "$runs_dir/current"
+ln -sfn "control/$run_id" "$runs_dir/control-current.next"
+mv -Tf "$runs_dir/control-current.next" "$runs_dir/control-current"
 
 echo "Experiment workspace: $workspace_dir"
 echo "Current workspace symlink: $runs_dir/current -> workspaces/$run_id"
+echo "Experiment control: $control_dir"
+echo "Current control symlink: $runs_dir/control-current -> control/$run_id"
 
 if [ "$SOG_EXPERIMENT_DRIVER" = "host" ]; then
   rm -rf "$workspace_dir"/*
   cp -a "$experiment_dir/fixture/." "$workspace_dir/"
-  export SOG_TRACE_PATH="$workspace_dir/sog-trace.jsonl"
+  export SOG_CONTROL_ROOT="$control_dir"
+  export SOG_TRACE_PATH="$control_dir/sog-trace.jsonl"
   export SOG_CODEX_HOME="${SOG_CODEX_HOME_HOST}"
   cd "$workspace_dir"
   "$SOG_EXECUTABLE" "$(<"$experiment_dir/prompt.txt")"
@@ -115,6 +126,8 @@ if [ "$SOG_EXPERIMENT_DRIVER" = "host" ]; then
 fi
 
 cd "$experiment_dir"
+export SOG_CONTROL_ROOT="/sog-control"
+export SOG_TRACE_PATH="/sog-control/sog-trace.jsonl"
 cleanup() {
   SOG_EXECUTABLE="$SOG_EXECUTABLE" docker compose down >/dev/null 2>&1 || true
 }

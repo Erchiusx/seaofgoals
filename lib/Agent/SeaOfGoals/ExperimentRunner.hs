@@ -12,7 +12,7 @@ import Agent.SeaOfGoals.CodexProcess
   ( CodexProcessConfig
   , CodexProcessResult (..)
   , loadCodexProcessConfigFromEnv
-  , runCodexProcess
+  , runCodexProcessWithControlRoot
   )
 import Agent.SeaOfGoals.Compile.Compiler
   ( CompiledGoalGraph (..)
@@ -24,6 +24,16 @@ import Agent.SeaOfGoals.Config
   , Config
   , configConcurrentChase
   , loadConfigFromEnv
+  )
+import Agent.SeaOfGoals.GoalContextPreload
+  ( GoalContextPreloadConfig
+  , GoalContextPreloadPlan (..)
+  , PreloadedGoalContext (..)
+  , loadGoalContextPreloadConfigFromEnv
+  , loadGoalContextPreloadPlanFromEnv
+  , mergeGoalContextPreloadPlans
+  , preloadGoalContextWithPlanDetailed
+  , readGoalContextPreloadPlanFile
   )
 import Agent.SeaOfGoals.Harness
   ( HarnessConfig (..)
@@ -88,6 +98,14 @@ import Agent.SeaOfGoals.Workspace.Bwrap.ToolBinding
   ( BwrapToolBinding (..)
   , bwrapShellTool
   )
+#ifdef SOG_FUSE
+import Agent.SeaOfGoals.Workspace.Backend qualified as WorkspaceBackend
+import Agent.SeaOfGoals.Workspace.Fuse.Mount
+  ( mountFuseWorkspace
+  , unmountFuseWorkspace
+  )
+import Agent.SeaOfGoals.Workspace.Fuse.Store qualified as FuseStore
+#endif
 import Agent.SeaOfGoals.Workspace.Sandbox
   ( SandboxRunner (..)
   )
@@ -100,6 +118,11 @@ import Control.Concurrent.MVar
   , modifyMVar_
   , newMVar
   )
+#ifdef SOG_FUSE
+import Control.Exception
+  ( bracket
+  )
+#endif
 import Control.Monad
   ( filterM
   , forM
@@ -128,7 +151,7 @@ import Data.IORef
   , readIORef
   , writeIORef
   )
-import Data.List (isPrefixOf)
+import Data.List (isPrefixOf, sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
@@ -173,6 +196,7 @@ data ExperimentContext = ExperimentContext
   { experimentBackend :: GPTBackend
   , experimentRequestTemplate :: LLMRequest
   , experimentTracePath :: FilePath
+  , experimentControlRoot :: FilePath
   , experimentSystemPromptText :: Text
   , experimentUserPromptText :: Text
   , experimentConfig :: Config
@@ -181,11 +205,29 @@ data ExperimentContext = ExperimentContext
   , experimentToolsForRun :: [ToolSpec]
   , experimentEventSink :: HarnessEvent -> IO ()
   , experimentWorkflowSpec :: Maybe WorkflowSpec
+  , experimentCodexHistoryHandoff :: Bool
+  , experimentConcurrentWorkspaceMode :: ConcurrentWorkspaceMode
+  , experimentGoalContextPreloadConfig :: GoalContextPreloadConfig
+  , experimentGoalContextPreloadPlan :: GoalContextPreloadPlan
+  , experimentDynamicGoalContextPreloadPlan :: IORef GoalContextPreloadPlan
   }
 
 data AgentRunnerMode
   = HarnessAgentRunner
   | CodexAgentRunner
+  deriving stock (Eq, Show)
+
+data ConcurrentWorkspaceMode
+  = CopyTreeWorkspace
+  | FuseEventWorkspace
+  deriving stock (Eq, Show)
+
+data AcceptedEffects = AcceptedEffects
+  { acceptedEffectsGoal :: GoalNodeId
+  , acceptedEffectsGeneration :: Int
+  , acceptedEffectsReads :: Set FilePath
+  , acceptedEffectsWrites :: Set FilePath
+  }
   deriving stock (Eq, Show)
 
 runPromptFromArgs :: IO ()
@@ -230,13 +272,29 @@ runPromptWithGraph scheduler context graph =
 
 loadExperimentContext :: String -> Text -> IO ExperimentContext
 loadExperimentContext apiKey prompt = do
-  tracePath <- fromMaybe "sog-trace.jsonl" <$> lookupEnv "SOG_TRACE_PATH"
+  workspaceRoot <- normalise <$> getCurrentDirectory
+  controlRoot <-
+    maybe
+      (pure (defaultExperimentControlRoot workspaceRoot))
+      (pure . normalise)
+      =<< lookupEnv "SOG_CONTROL_ROOT"
+  tracePath <-
+    maybe
+      (pure (controlRoot </> "sog-trace.jsonl"))
+      (pure . normalise)
+      =<< lookupEnv "SOG_TRACE_PATH"
   model <- Text.pack . fromMaybe "gpt-5.5" <$> lookupEnv "SOG_MODEL"
   config <- loadConfigFromEnv
   agentRunner <- loadAgentRunnerMode
   codexProcessConfig <- loadCodexProcessConfigFromEnv
   workflowSpec <- loadWorkflowSpecFromEnv
-  tools <- loadExperimentTools
+  codexHistoryHandoff <- loadCodexHistoryHandoff
+  concurrentWorkspaceMode <- loadConcurrentWorkspaceMode
+  goalContextPreloadConfig <- loadGoalContextPreloadConfigFromEnv
+  goalContextPreloadPlan <- loadGoalContextPreloadPlanFromEnv
+  dynamicGoalContextPreloadPlan <- newIORef (GoalContextPreloadPlan Map.empty)
+  createDirectoryIfMissing True controlRoot
+  tools <- loadExperimentToolsWithControlRoot controlRoot
   skillContext <- loadSkillContextFromEnv
   createDirectoryIfMissing True (takeDirectory tracePath)
   traceLock <- newMVar ()
@@ -270,6 +328,7 @@ loadExperimentContext apiKey prompt = do
       { experimentBackend = backend
       , experimentRequestTemplate = requestTemplate
       , experimentTracePath = tracePath
+      , experimentControlRoot = controlRoot
       , experimentSystemPromptText = systemPrompt
       , experimentUserPromptText = prompt
       , experimentConfig = config
@@ -278,7 +337,16 @@ loadExperimentContext apiKey prompt = do
       , experimentToolsForRun = tools
       , experimentEventSink = lockedAppendEvent traceLock tracePath
       , experimentWorkflowSpec = workflowSpec
+      , experimentCodexHistoryHandoff = codexHistoryHandoff
+      , experimentConcurrentWorkspaceMode = concurrentWorkspaceMode
+      , experimentGoalContextPreloadConfig = goalContextPreloadConfig
+      , experimentGoalContextPreloadPlan = goalContextPreloadPlan
+      , experimentDynamicGoalContextPreloadPlan = dynamicGoalContextPreloadPlan
       }
+
+defaultExperimentControlRoot :: FilePath -> FilePath
+defaultExperimentControlRoot workspaceRoot =
+  workspaceRoot <> ".sog"
 
 runSinglePrompt :: ExperimentContext -> IO ()
 runSinglePrompt context = do
@@ -298,13 +366,20 @@ runSinglePrompt context = do
             }
     CodexAgentRunner -> do
       workspaceRoot <- normalise <$> getCurrentDirectory
+      (promptWithPreload, _) <-
+        enrichGoalPromptForWorkspace
+          context
+          Nothing
+          workspaceRoot
+          (experimentUserPromptText context)
       result <-
-        runCodexProcess
+        runCodexProcessWithControlRoot
           (experimentCodexProcessConfig context)
           (experimentEventSink context)
           Nothing
           workspaceRoot
-          (codexPrompt context (experimentUserPromptText context))
+          (experimentControlRoot context </> "single")
+          (codexPrompt context promptWithPreload)
       when (codexProcessExitCode result /= 0) $
         fail
           ("codex process failed with exit code " <> show (codexProcessExitCode result))
@@ -314,11 +389,12 @@ runSerialPromptWithGraph :: ExperimentContext -> CompiledGoalGraph -> IO ()
 runSerialPromptWithGraph context compiledGraph = do
   let goalGraph = compiledGraphToGoalGraph compiledGraph
   summariesRef <- newSummaries
+  historiesRef <- newCodexHistories
   result <-
     runSerialScheduler
       SerialScheduler
         { serialSchedulerRunGoal =
-            runSerialGoal context goalGraph summariesRef
+            runSerialGoal context goalGraph summariesRef historiesRef
         }
       goalGraph
   case result of
@@ -347,8 +423,12 @@ runConcurrentPromptWithGraph context compiledGraph = do
     (Just "compiled goal graph before scheduling")
     (initialChaseState goalGraph)
   summariesRef <- newSummaries
+  acceptedHistoriesRef <- newCodexHistories
+  pendingHistoriesRef <- newCodexHistories
   runsRef <- newIORef Map.empty
-  acceptedWritesRef <- newIORef Map.empty
+  acceptedEffectsRef <- newIORef []
+  acceptedGenerationRef <- newIORef 0
+  runBaseGenerationsRef <- newIORef Map.empty
   result <-
     runConcurrentChase
       ConcurrentChaseRunner
@@ -362,6 +442,10 @@ runConcurrentPromptWithGraph context compiledGraph = do
               goalGraph
               workspaceRoot
               summariesRef
+              acceptedHistoriesRef
+              pendingHistoriesRef
+              acceptedGenerationRef
+              runBaseGenerationsRef
               runsRef
         , concurrentChaseMergeGoal =
             mergeConcurrentGoal
@@ -369,7 +453,11 @@ runConcurrentPromptWithGraph context compiledGraph = do
               goalGraph
               workspaceRoot
               summariesRef
-              acceptedWritesRef
+              acceptedHistoriesRef
+              pendingHistoriesRef
+              acceptedEffectsRef
+              acceptedGenerationRef
+              runBaseGenerationsRef
         }
       goalGraph
   case result of
@@ -443,9 +531,10 @@ runSerialGoal
   :: ExperimentContext
   -> GoalGraph
   -> Summaries
+  -> CodexHistories
   -> GoalNode
   -> IO (Either Text AgentRunResult)
-runSerialGoal context goalGraph summaries node = do
+runSerialGoal context goalGraph summaries histories node = do
   recordGraphSnapshot
     context
     "serial_goal_enter"
@@ -453,16 +542,19 @@ runSerialGoal context goalGraph summaries node = do
     goalGraph
   predecessorSummaries <-
     summariesFor summaries (goalPredecessors goalGraph (goalNodeId node))
+  predecessorHistories <-
+    historiesFor context goalGraph histories (goalNodeId node)
   let prompt =
         serialGoalPrompt
           (experimentUserPromptText context)
           predecessorSummaries
+          predecessorHistories
           node
   case experimentAgentRunner context of
     HarnessAgentRunner ->
       runSerialHarnessGoal context summaries node prompt
     CodexAgentRunner ->
-      runSerialCodexGoal context summaries node prompt
+      runSerialCodexGoal context summaries histories node prompt
 
 runSerialHarnessGoal
   :: ExperimentContext
@@ -471,13 +563,20 @@ runSerialHarnessGoal
   -> Text
   -> IO (Either Text AgentRunResult)
 runSerialHarnessGoal context summaries node prompt = do
+  workspaceRoot <- normalise <$> getCurrentDirectory
+  (promptWithPreload, preloadedReads) <-
+    enrichGoalPromptForWorkspace
+      context
+      (Just (goalNodeId node))
+      workspaceRoot
+      prompt
   state <-
     runHarness
       HarnessConfig
         { harnessProvider = experimentBackend context
         , harnessRequestTemplate = experimentRequestTemplate context
         , harnessSystemPrompt = experimentSystemPromptText context
-        , harnessUserPrompt = prompt
+        , harnessUserPrompt = promptWithPreload
         , harnessTools = experimentToolsForRun context
         , harnessMaxTurns = 32
         , harnessEventSink = experimentEventSink context
@@ -491,7 +590,7 @@ runSerialHarnessGoal context summaries node prompt = do
         { agentRunResultGoal = goalNodeId node
         , agentRunResultStatus = status
         , agentRunResultSummaryForDependents = summary
-        , agentRunResultReads = Set.empty
+        , agentRunResultReads = preloadedReads
         , agentRunResultWrites = Set.empty
         , agentRunResultSnapshot = SnapshotId (unGoalNodeId (goalNodeId node))
         }
@@ -512,21 +611,38 @@ runSerialHarnessGoal context summaries node prompt = do
 runSerialCodexGoal
   :: ExperimentContext
   -> Summaries
+  -> CodexHistories
   -> GoalNode
   -> Text
   -> IO (Either Text AgentRunResult)
-runSerialCodexGoal context summaries node prompt = do
+runSerialCodexGoal context summaries histories node prompt = do
   workspaceRoot <- normalise <$> getCurrentDirectory
-  let beforeWorkspace =
-        workspaceRoot
-          </> ".sog"
-          </> "serial"
-          </> Text.unpack (unGoalNodeId (goalNodeId node))
-          </> "before"
+  let
+    beforeWorkspace =
+      experimentControlRoot context
+        </> "serial"
+        </> Text.unpack (unGoalNodeId (goalNodeId node))
+        </> "before"
+    controlRoot =
+      experimentControlRoot context
+        </> "serial"
+        </> Text.unpack (unGoalNodeId (goalNodeId node))
+        </> "control"
   resetDirectory beforeWorkspace
   copyWorkspaceTree workspaceRoot beforeWorkspace
+  (promptWithPreload, preloadedReads) <-
+    enrichGoalPromptForWorkspace
+      context
+      (Just (goalNodeId node))
+      workspaceRoot
+      prompt
   codexResult <-
-    runCodexGoalProcess context workspaceRoot node prompt
+    runCodexGoalProcessWithControlRoot
+      context
+      workspaceRoot
+      controlRoot
+      node
+      promptWithPreload
   changedPaths <- workspaceChangedPaths beforeWorkspace workspaceRoot
   let
     status = codexGoalStatus codexResult
@@ -536,13 +652,17 @@ runSerialCodexGoal context summaries node prompt = do
         { agentRunResultGoal = goalNodeId node
         , agentRunResultStatus = status
         , agentRunResultSummaryForDependents = summary
-        , agentRunResultReads = Set.empty
+        , agentRunResultReads = preloadedReads
         , agentRunResultWrites = Set.fromList changedPaths
         , agentRunResultSnapshot = SnapshotId (unGoalNodeId (goalNodeId node))
         }
   if serialGoalStatusIsTerminal status
     then do
       rememberSummary summaries (goalNodeId node) summary
+      rememberCodexHistory
+        histories
+        (goalNodeId node)
+        (codexProcessStdout codexResult)
       pure (Right result)
     else
       pure
@@ -554,24 +674,26 @@ runSerialCodexGoal context summaries node prompt = do
             )
         )
 
-runCodexGoalProcess
+runCodexGoalProcessWithControlRoot
   :: ExperimentContext
+  -> FilePath
   -> FilePath
   -> GoalNode
   -> Text
   -> IO CodexProcessResult
-runCodexGoalProcess context workspaceRoot node prompt = do
+runCodexGoalProcessWithControlRoot context workspaceRoot controlRoot node prompt = do
   experimentEventSink context $
     SubgoalStarted
       { eventSubgoalId = unGoalNodeId (goalNodeId node)
       , eventSubgoalName = goalNodeName node
       }
   result <-
-    runCodexProcess
+    runCodexProcessWithControlRoot
       (experimentCodexProcessConfig context)
       (experimentEventSink context)
       (Just (unGoalNodeId (goalNodeId node)))
       workspaceRoot
+      controlRoot
       (codexPrompt context prompt)
   experimentEventSink context $
     SubgoalEnded
@@ -579,6 +701,7 @@ runCodexGoalProcess context workspaceRoot node prompt = do
       , eventStatus = codexGoalStatus result
       , eventSummary = Just (codexGoalSummary node result)
       }
+  recordDynamicPreloadPlanFromControlRoot context controlRoot
   pure result
 
 codexPrompt :: ExperimentContext -> Text -> Text
@@ -593,6 +716,58 @@ codexPrompt context prompt =
     , prompt
     , "When the task is finished, reply with a concise summary for dependent goals."
     ]
+
+enrichGoalPromptForWorkspace
+  :: ExperimentContext
+  -> Maybe GoalNodeId
+  -> FilePath
+  -> Text
+  -> IO (Text, Set FilePath)
+enrichGoalPromptForWorkspace context maybeGoalId workspaceRoot prompt = do
+  dynamicPlan <- readIORef (experimentDynamicGoalContextPreloadPlan context)
+  let
+    GoalContextPreloadPlan plan =
+      mergeGoalContextPreloadPlans
+        (experimentGoalContextPreloadPlan context)
+        dynamicPlan
+    plannedFiles =
+      maybeGoalId >>= \goalId -> Map.lookup (unGoalNodeId goalId) plan
+  preloaded <-
+    preloadGoalContextWithPlanDetailed
+      (experimentGoalContextPreloadConfig context)
+      plannedFiles
+      workspaceRoot
+      prompt
+  pure
+    ( Text.intercalate
+        "\n\n"
+        (filter (not . Text.null) [preloadedGoalContextText preloaded, prompt])
+    , preloadedGoalContextReads preloaded
+    )
+
+recordDynamicPreloadPlanFromControlRoot
+  :: ExperimentContext -> FilePath -> IO ()
+recordDynamicPreloadPlanFromControlRoot context controlRoot = do
+  let planPath = controlRoot </> "preload-plan.json"
+  exists <- doesFileExist planPath
+  when exists $ do
+    parsed <- readGoalContextPreloadPlanFile planPath
+    case parsed of
+      Left err ->
+        experimentEventSink context $
+          EffectRecorded
+            { eventEffect =
+                EffectRecord
+                  { effectKind = "preload_plan_parse_error"
+                  , effectResource = Text.pack planPath
+                  , effectDetail = Just (Text.pack err)
+                  }
+            , eventActiveSubgoal = Nothing
+            }
+      Right plan ->
+        modifyIORef'
+          (experimentDynamicGoalContextPreloadPlan context)
+          (`mergeGoalContextPreloadPlans` plan)
 
 codexGoalStatus :: CodexProcessResult -> Text
 codexGoalStatus result
@@ -618,53 +793,115 @@ runConcurrentGoal
   -> GoalGraph
   -> FilePath
   -> Summaries
+  -> CodexHistories
+  -> CodexHistories
+  -> IORef Int
+  -> IORef (Map GoalNodeId Int)
   -> IORef (Map GoalNodeId Int)
   -> GoalNode
   -> IO (Either Text AgentRunResult)
-runConcurrentGoal context goalGraph baseWorkspace summaries runsRef node = do
-  recordGraphSnapshot
-    context
-    "concurrent_goal_enter"
-    (Just ("enter " <> unGoalNodeId (goalNodeId node)))
-    goalGraph
-  runIndex <- nextGoalRunIndex runsRef (goalNodeId node)
-  let
-    runSlug =
-      Text.unpack (unGoalNodeId (goalNodeId node))
-        <> "-"
-        <> show runIndex
-    taskWorkspace =
-      baseWorkspace
-        </> ".sog"
-        </> "concurrent"
-        </> "goals"
-        </> runSlug
-        </> "workspace"
-  resetDirectory taskWorkspace
-  copyWorkspaceTree baseWorkspace taskWorkspace
-  predecessorSummaries <-
-    summariesFor summaries (goalPredecessors goalGraph (goalNodeId node))
-  tools <- experimentToolsForWorkspace taskWorkspace
-  let prompt =
-        serialGoalPrompt
-          (experimentUserPromptText context)
-          predecessorSummaries
-          node
-  case experimentAgentRunner context of
-    HarnessAgentRunner ->
-      runConcurrentHarnessGoal context taskWorkspace tools node prompt
-    CodexAgentRunner ->
-      runConcurrentCodexGoal context baseWorkspace taskWorkspace node prompt
+runConcurrentGoal
+  context
+  goalGraph
+  baseWorkspace
+  summaries
+  histories
+  pendingHistories
+  acceptedGenerationRef
+  runBaseGenerationsRef
+  runsRef
+  node = do
+    recordGraphSnapshot
+      context
+      "concurrent_goal_enter"
+      (Just ("enter " <> unGoalNodeId (goalNodeId node)))
+      goalGraph
+    runIndex <- nextGoalRunIndex runsRef (goalNodeId node)
+    baseGeneration <- readIORef acceptedGenerationRef
+    modifyIORef'
+      runBaseGenerationsRef
+      (Map.insert (goalNodeId node) baseGeneration)
+    let
+      runSlug =
+        Text.unpack (unGoalNodeId (goalNodeId node))
+          <> "-"
+          <> show runIndex
+      runRoot =
+        experimentControlRoot context
+          </> "concurrent"
+          </> "goals"
+          </> runSlug
+      ancestorWorkspace = runRoot </> "ancestor"
+      taskWorkspace =
+        runRoot </> "workspace"
+    predecessorSummaries <-
+      summariesFor summaries (goalPredecessors goalGraph (goalNodeId node))
+    predecessorHistories <-
+      historiesFor context goalGraph histories (goalNodeId node)
+    let prompt =
+          serialGoalPrompt
+            (experimentUserPromptText context)
+            predecessorSummaries
+            predecessorHistories
+            node
+    case experimentConcurrentWorkspaceMode context of
+      CopyTreeWorkspace -> do
+        resetDirectory runRoot
+        copyWorkspaceTree baseWorkspace ancestorWorkspace
+        copyWorkspaceTree ancestorWorkspace taskWorkspace
+        tools <- experimentToolsForWorkspace taskWorkspace
+        (promptWithPreload, preloadedReads) <-
+          enrichGoalPromptForWorkspace
+            context
+            (Just (goalNodeId node))
+            taskWorkspace
+            prompt
+        case experimentAgentRunner context of
+          HarnessAgentRunner ->
+            runConcurrentHarnessGoal
+              context
+              ancestorWorkspace
+              taskWorkspace
+              tools
+              node
+              promptWithPreload
+              preloadedReads
+          CodexAgentRunner ->
+            runConcurrentCodexGoal
+              context
+              pendingHistories
+              (runRoot </> "control")
+              ancestorWorkspace
+              taskWorkspace
+              node
+              promptWithPreload
+              preloadedReads
+      FuseEventWorkspace -> do
+        case experimentAgentRunner context of
+          HarnessAgentRunner ->
+            pure
+              ( Left
+                  "SOG_CONCURRENT_WORKSPACE=fuse currently supports SOG_AGENT_RUNNER=codex only"
+              )
+          CodexAgentRunner ->
+            runConcurrentCodexGoalWithFuse
+              context
+              pendingHistories
+              baseWorkspace
+              runRoot
+              node
+              prompt
 
 runConcurrentHarnessGoal
   :: ExperimentContext
   -> FilePath
+  -> FilePath
   -> [ToolSpec]
   -> GoalNode
   -> Text
+  -> Set FilePath
   -> IO (Either Text AgentRunResult)
-runConcurrentHarnessGoal context taskWorkspace tools node prompt = do
-  baseWorkspace <- normalise <$> getCurrentDirectory
+runConcurrentHarnessGoal context ancestorWorkspace taskWorkspace tools node prompt preloadedReads = do
   state <-
     runHarness
       HarnessConfig
@@ -678,7 +915,7 @@ runConcurrentHarnessGoal context taskWorkspace tools node prompt = do
         , harnessWorkflowSpec = experimentWorkflowSpec context
         }
   let status = serialGoalStatus node state
-  changedPaths <- workspaceChangedPaths baseWorkspace taskWorkspace
+  changedPaths <- workspaceChangedPaths ancestorWorkspace taskWorkspace
   let
     summary = serialGoalSummary node status
     result =
@@ -686,7 +923,7 @@ runConcurrentHarnessGoal context taskWorkspace tools node prompt = do
         { agentRunResultGoal = goalNodeId node
         , agentRunResultStatus = status
         , agentRunResultSummaryForDependents = summary
-        , agentRunResultReads = Set.empty
+        , agentRunResultReads = preloadedReads
         , agentRunResultWrites = Set.fromList changedPaths
         , agentRunResultSnapshot =
             SnapshotId
@@ -709,14 +946,18 @@ runConcurrentHarnessGoal context taskWorkspace tools node prompt = do
 
 runConcurrentCodexGoal
   :: ExperimentContext
+  -> CodexHistories
+  -> FilePath
   -> FilePath
   -> FilePath
   -> GoalNode
   -> Text
+  -> Set FilePath
   -> IO (Either Text AgentRunResult)
-runConcurrentCodexGoal context baseWorkspace taskWorkspace node prompt = do
-  codexResult <- runCodexGoalProcess context taskWorkspace node prompt
-  changedPaths <- workspaceChangedPaths baseWorkspace taskWorkspace
+runConcurrentCodexGoal context pendingHistories controlRoot ancestorWorkspace taskWorkspace node prompt preloadedReads = do
+  codexResult <-
+    runCodexGoalProcessWithControlRoot context taskWorkspace controlRoot node prompt
+  changedPaths <- workspaceChangedPaths ancestorWorkspace taskWorkspace
   let
     status = codexGoalStatus codexResult
     summary = codexGoalSummary node codexResult
@@ -725,7 +966,7 @@ runConcurrentCodexGoal context baseWorkspace taskWorkspace node prompt = do
         { agentRunResultGoal = goalNodeId node
         , agentRunResultStatus = status
         , agentRunResultSummaryForDependents = summary
-        , agentRunResultReads = Set.empty
+        , agentRunResultReads = preloadedReads
         , agentRunResultWrites = Set.fromList changedPaths
         , agentRunResultSnapshot =
             SnapshotId
@@ -735,7 +976,12 @@ runConcurrentCodexGoal context baseWorkspace taskWorkspace node prompt = do
               )
         }
   if serialGoalStatusIsTerminal status
-    then pure (Right result)
+    then do
+      rememberCodexHistory
+        pendingHistories
+        (goalNodeId node)
+        (codexProcessStdout codexResult)
+      pure (Right result)
     else
       pure
         ( Left
@@ -746,65 +992,191 @@ runConcurrentCodexGoal context baseWorkspace taskWorkspace node prompt = do
             )
         )
 
+runConcurrentCodexGoalWithFuse
+  :: ExperimentContext
+  -> CodexHistories
+  -> FilePath
+  -> FilePath
+  -> GoalNode
+  -> Text
+  -> IO (Either Text AgentRunResult)
+#ifdef SOG_FUSE
+runConcurrentCodexGoalWithFuse context pendingHistories baseWorkspace runRoot node prompt = do
+  resetDirectory runRoot
+  let
+    storeRoot = runRoot </> "store"
+    controlRoot = runRoot </> "control"
+    backend = FuseStore.Backend storeRoot
+    taskId = unGoalNodeId (goalNodeId node)
+  handle <-
+    WorkspaceBackend.prepareWorkspace
+      backend
+      FuseStore.Spec
+        { FuseStore.specTaskId = taskId
+        , FuseStore.specBasePath = baseWorkspace
+        , FuseStore.specAgentMountPath = "/workspace"
+        }
+  let mountValue = WorkspaceBackend.mount backend handle
+  codexResult <-
+    bracket
+      (mountFuseWorkspace handle mountValue)
+      unmountFuseWorkspace
+      ( \_ -> do
+          (promptWithPreload, preloadedReads) <-
+            enrichGoalPromptForWorkspace
+              context
+              (Just (goalNodeId node))
+              baseWorkspace
+              prompt
+          runCodexGoalProcessWithControlRoot
+            context
+            (WorkspaceBackend.mountHostPath mountValue)
+            controlRoot
+            node
+            promptWithPreload
+      )
+  accessLog <- filterWorkspaceAccesses <$> FuseStore.accessLog handle
+  let
+    status = codexGoalStatus codexResult
+    summary = codexGoalSummary node codexResult
+    result =
+      AgentRunResult
+        { agentRunResultGoal = goalNodeId node
+        , agentRunResultStatus = status
+        , agentRunResultSummaryForDependents = summary
+        , agentRunResultReads = Set.union preloadedReads (FuseStore.readSet accessLog)
+        , agentRunResultWrites = FuseStore.writeSet accessLog
+        , agentRunResultSnapshot =
+            SnapshotId
+              ( unGoalNodeId (goalNodeId node)
+                  <> ":"
+                  <> Text.pack (storeRoot </> Text.unpack taskId </> "files")
+              )
+        }
+  if serialGoalStatusIsTerminal status
+    then do
+      rememberCodexHistory
+        pendingHistories
+        (goalNodeId node)
+        (codexProcessStdout codexResult)
+      pure (Right result)
+    else
+      pure
+        ( Left
+            ( "concurrent codex goal "
+                <> unGoalNodeId (goalNodeId node)
+                <> " failed: "
+                <> status
+            )
+        )
+#else
+runConcurrentCodexGoalWithFuse _ _ _ _ _ _ =
+  pure (Left "SOG_CONCURRENT_WORKSPACE=fuse requires building SeaOfGoals with -f fuse")
+#endif
+
+#ifdef SOG_FUSE
+filterWorkspaceAccesses :: [FuseStore.Access] -> [FuseStore.Access]
+filterWorkspaceAccesses =
+  filter (not . ignoredAccess)
+ where
+  ignoredAccess access =
+    any isIgnoredPath (accessPaths access)
+
+  accessPaths access =
+    case access of
+      FuseStore.ContentRead path -> [path]
+      FuseStore.MetadataRead path -> [path]
+      FuseStore.DirectoryRead path -> [path]
+      FuseStore.FileCreated path -> [path]
+      FuseStore.FileModified path -> [path]
+      FuseStore.FileDeleted path -> [path]
+      FuseStore.FileRenamed fromPath toPath -> [fromPath, toPath]
+
+  isIgnoredPath path =
+    case splitDirectories (normalise path) of
+      ".sog" : _ -> True
+      _ -> False
+#endif
+
 mergeConcurrentGoal
   :: ExperimentContext
   -> GoalGraph
   -> FilePath
   -> Summaries
-  -> IORef (Map FilePath GoalNodeId)
+  -> CodexHistories
+  -> CodexHistories
+  -> IORef [AcceptedEffects]
+  -> IORef Int
+  -> IORef (Map GoalNodeId Int)
   -> AgentRunResult
   -> IO (Either ConcurrentChaseConflict ())
-mergeConcurrentGoal context goalGraph baseWorkspace summaries acceptedWritesRef result = do
-  recordMergeGraphSnapshot context goalGraph "merge_before" result Nothing
-  acceptedWrites <- readIORef acceptedWritesRef
-  case firstWriteConflict acceptedWrites (agentRunResultWrites result) of
-    Just (path, formerGoal) -> do
-      recordMergeGraphSnapshot
+mergeConcurrentGoal
+  context
+  goalGraph
+  baseWorkspace
+  summaries
+  histories
+  pendingHistories
+  acceptedEffectsRef
+  acceptedGenerationRef
+  runBaseGenerationsRef
+  result = do
+    recordMergeGraphSnapshot context goalGraph "merge_before" result Nothing
+    maybeConflict <-
+      firstConcurrentConflict
         context
-        goalGraph
-        "merge_conflict"
+        baseWorkspace
+        acceptedEffectsRef
+        runBaseGenerationsRef
         result
-        (Just ("conflict on " <> Text.pack path <> " with " <> unGoalNodeId formerGoal))
-      experimentEventSink context $
-        EffectRecorded
-          EffectRecord
-            { effectKind = "merge_conflict"
-            , effectResource = Text.pack path
-            , effectDetail =
-                Just
-                  ( "former="
-                      <> unGoalNodeId formerGoal
-                      <> ", latter="
-                      <> unGoalNodeId (agentRunResultGoal result)
-                  )
-            }
-          Nothing
-      pure
-        ( Left
-            ConcurrentChaseConflict
-              { concurrentChaseConflictLeft = agentRunResultGoal result
-              , concurrentChaseConflictRight = formerGoal
-              , concurrentChaseConflictReason =
-                  "workspace write/write conflict on " <> Text.pack path
+    case maybeConflict of
+      Just (path, formerGoal) -> do
+        recordMergeGraphSnapshot
+          context
+          goalGraph
+          "merge_conflict"
+          result
+          (Just ("conflict on " <> Text.pack path <> " with " <> unGoalNodeId formerGoal))
+        experimentEventSink context $
+          EffectRecorded
+            EffectRecord
+              { effectKind = "merge_conflict"
+              , effectResource = Text.pack path
+              , effectDetail =
+                  Just
+                    ( "former="
+                        <> unGoalNodeId formerGoal
+                        <> ", latter="
+                        <> unGoalNodeId (agentRunResultGoal result)
+                    )
               }
-        )
-    Nothing -> do
-      applyGoalWorkspace baseWorkspace result
-      rememberSummary
-        summaries
-        (agentRunResultGoal result)
-        (agentRunResultSummaryForDependents result)
-      modifyIORef'
-        acceptedWritesRef
-        ( \current ->
-            foldr
-              (`Map.insert` agentRunResultGoal result)
-              current
-              (Set.toList (agentRunResultWrites result))
-        )
-      rememberMergeAccepted context result
-      recordMergeGraphSnapshot context goalGraph "merge_accept" result Nothing
-      pure (Right ())
+            Nothing
+        pure
+          ( Left
+              ConcurrentChaseConflict
+                { concurrentChaseConflictLeft = agentRunResultGoal result
+                , concurrentChaseConflictRight = formerGoal
+                , concurrentChaseConflictReason =
+                    "workspace access conflict on " <> Text.pack path
+                }
+          )
+      Nothing -> do
+        applyGoalWorkspace baseWorkspace result
+        rememberSummary
+          summaries
+          (agentRunResultGoal result)
+          (agentRunResultSummaryForDependents result)
+        promoteCodexHistory
+          pendingHistories
+          histories
+          (agentRunResultGoal result)
+        generation <- nextAcceptedGeneration acceptedGenerationRef
+        modifyIORef'
+          acceptedEffectsRef
+          (acceptedEffectFromResult generation result :)
+        rememberMergeAccepted context result
+        recordMergeGraphSnapshot context goalGraph "merge_accept" result Nothing
+        pure (Right ())
 
 recordDagSnapshot
   :: ExperimentContext -> Text -> Maybe Text -> ChaseState -> IO ()
@@ -891,15 +1263,112 @@ chaseStatuses state =
         (textGoalSet (Map.keysSet (chaseCompleted state)))
     ]
 
-firstWriteConflict
-  :: Map FilePath GoalNodeId -> Set FilePath -> Maybe (FilePath, GoalNodeId)
-firstWriteConflict acceptedWrites writes =
-  case [ (path, formerGoal)
-       | path <- Set.toList writes
-       , Just formerGoal <- [Map.lookup path acceptedWrites]
-       ] of
-    conflict : _ -> Just conflict
-    [] -> Nothing
+ancestorWorkspacePath :: AgentRunResult -> FilePath
+ancestorWorkspacePath result =
+  takeDirectory (snapshotWorkspacePath (agentRunResultSnapshot result))
+    </> "ancestor"
+
+firstConcurrentConflict
+  :: ExperimentContext
+  -> FilePath
+  -> IORef [AcceptedEffects]
+  -> IORef (Map GoalNodeId Int)
+  -> AgentRunResult
+  -> IO (Maybe (FilePath, GoalNodeId))
+firstConcurrentConflict context baseWorkspace acceptedEffectsRef runBaseGenerationsRef result =
+  case experimentConcurrentWorkspaceMode context of
+    CopyTreeWorkspace -> do
+      conflictPaths <-
+        workspaceMergeConflictPaths
+          (ancestorWorkspacePath result)
+          baseWorkspace
+          (snapshotWorkspacePath (agentRunResultSnapshot result))
+      acceptedEffects <- readIORef acceptedEffectsRef
+      let
+        preferredConflicts =
+          [ (path, acceptedEffectsGoal effects)
+          | path <- Set.toList conflictPaths
+          , effects <- acceptedEffects
+          , path `Set.member` acceptedEffectsWrites effects
+          ]
+        fallback =
+          case Set.lookupMin conflictPaths of
+            Nothing -> Nothing
+            Just path -> Just (path, agentRunResultGoal result)
+      pure (preferredConflicts `firstOr` fallback)
+    FuseEventWorkspace -> do
+      baseGenerations <- readIORef runBaseGenerationsRef
+      acceptedEffects <- readIORef acceptedEffectsRef
+      let
+        baseGeneration =
+          Map.findWithDefault 0 (agentRunResultGoal result) baseGenerations
+        concurrentEffects =
+          filter
+            ((> baseGeneration) . acceptedEffectsGeneration)
+            acceptedEffects
+      pure (firstAccessSetConflict concurrentEffects result)
+
+firstAccessSetConflict
+  :: [AcceptedEffects] -> AgentRunResult -> Maybe (FilePath, GoalNodeId)
+firstAccessSetConflict accepted result =
+  firstOr
+    [ (path, acceptedEffectsGoal effects)
+    | effects <- accepted
+    , path <-
+        Set.toList
+          ( Set.unions
+              [ Set.intersection currentWrites (acceptedEffectsWrites effects)
+              , Set.intersection currentWrites (acceptedEffectsReads effects)
+              , Set.intersection currentReads (acceptedEffectsWrites effects)
+              ]
+          )
+    ]
+    Nothing
+ where
+  currentReads = agentRunResultReads result
+  currentWrites = agentRunResultWrites result
+
+acceptedEffectFromResult :: Int -> AgentRunResult -> AcceptedEffects
+acceptedEffectFromResult generation result =
+  AcceptedEffects
+    { acceptedEffectsGoal = agentRunResultGoal result
+    , acceptedEffectsGeneration = generation
+    , acceptedEffectsReads = agentRunResultReads result
+    , acceptedEffectsWrites = agentRunResultWrites result
+    }
+
+nextAcceptedGeneration :: IORef Int -> IO Int
+nextAcceptedGeneration generationRef = do
+  current <- readIORef generationRef
+  let next = current + 1
+  writeIORef generationRef next
+  pure next
+
+firstOr :: [value] -> Maybe value -> Maybe value
+firstOr (value : _) _ = Just value
+firstOr [] fallback = fallback
+
+workspaceMergeConflictPaths
+  :: FilePath -> FilePath -> FilePath -> IO (Set FilePath)
+workspaceMergeConflictPaths ancestorRoot baseRoot taskRoot = do
+  baseChanges <- Set.fromList <$> workspaceChangedPaths ancestorRoot baseRoot
+  taskChanges <- Set.fromList <$> workspaceChangedPaths ancestorRoot taskRoot
+  Set.fromList
+    <$> filterM
+      changedToDifferentContent
+      (Set.toList (Set.intersection baseChanges taskChanges))
+ where
+  changedToDifferentContent relativePath = do
+    let
+      basePath = baseRoot </> relativePath
+      taskPath = taskRoot </> relativePath
+    baseExists <- doesFileExist basePath
+    taskExists <- doesFileExist taskPath
+    case (baseExists, taskExists) of
+      (False, False) -> pure False
+      (True, False) -> pure True
+      (False, True) -> pure True
+      (True, True) -> (/=) <$> ByteString.readFile basePath <*> ByteString.readFile taskPath
 
 applyGoalWorkspace :: FilePath -> AgentRunResult -> IO ()
 applyGoalWorkspace baseWorkspace result = do
@@ -1022,14 +1491,16 @@ lockedAppendEvent lock path event =
     appendEvent path event
     pure ()
 
-serialGoalPrompt :: Text -> [(GoalNodeId, Text)] -> GoalNode -> Text
-serialGoalPrompt originalPrompt predecessorSummaries node =
+serialGoalPrompt
+  :: Text -> [(GoalNodeId, Text)] -> [(GoalNodeId, Text)] -> GoalNode -> Text
+serialGoalPrompt originalPrompt predecessorSummaries predecessorHistories node =
   Text.intercalate
     "\n\n"
     ( filter
         (not . Text.null)
         [ "Original task:\n" <> originalPrompt
         , renderedSummaries
+        , renderedHistories
         , Text.unlines
             [ "Execute exactly this compiled goal now."
             , "Goal id: " <> unGoalNodeId (goalNodeId node)
@@ -1058,6 +1529,20 @@ serialGoalPrompt originalPrompt predecessorSummaries node =
           )
   renderSummary (goalId, summary) =
     "- " <> unGoalNodeId goalId <> ": " <> summary
+  renderedHistories
+    | null predecessorHistories = ""
+    | otherwise =
+        Text.intercalate
+          "\n\n"
+          ( "Linearized Codex histories from transitive predecessor goals:"
+              : fmap renderHistory predecessorHistories
+          )
+  renderHistory (goalId, history) =
+    Text.unlines
+      [ "BEGIN CODEX HISTORY " <> unGoalNodeId goalId
+      , history
+      , "END CODEX HISTORY " <> unGoalNodeId goalId
+      ]
 
 serialGoalStatus :: GoalNode -> HarnessState -> Text
 serialGoalStatus node state
@@ -1082,6 +1567,8 @@ serialGoalSummary node status =
 
 type Summaries = IORef (Map GoalNodeId Text)
 
+type CodexHistories = IORef (Map GoalNodeId Text)
+
 newSummaries :: IO Summaries
 newSummaries = newIORef Map.empty
 
@@ -1097,6 +1584,79 @@ summariesFor summaries goalIds = do
     | goalId <- Set.toList goalIds
     , Just summary <- [Map.lookup goalId summaryMap]
     ]
+
+newCodexHistories :: IO CodexHistories
+newCodexHistories = newIORef Map.empty
+
+rememberCodexHistory :: CodexHistories -> GoalNodeId -> Text -> IO ()
+rememberCodexHistory histories goalId history =
+  modifyIORef' histories (Map.insert goalId history)
+
+promoteCodexHistory :: CodexHistories -> CodexHistories -> GoalNodeId -> IO ()
+promoteCodexHistory pendingHistories acceptedHistories goalId = do
+  pending <- readIORef pendingHistories
+  case Map.lookup goalId pending of
+    Nothing -> pure ()
+    Just history -> rememberCodexHistory acceptedHistories goalId history
+
+historiesFor
+  :: ExperimentContext
+  -> GoalGraph
+  -> CodexHistories
+  -> GoalNodeId
+  -> IO [(GoalNodeId, Text)]
+historiesFor context graph histories goalId
+  | not (experimentCodexHistoryHandoff context) = pure []
+  | otherwise = do
+      historyMap <- readIORef histories
+      pure
+        [ (predecessor, history)
+        | predecessor <- transitivePredecessorsInSerialOrder graph goalId
+        , Just history <- [Map.lookup predecessor historyMap]
+        ]
+
+transitivePredecessorsInSerialOrder :: GoalGraph -> GoalNodeId -> [GoalNodeId]
+transitivePredecessorsInSerialOrder graph goalId =
+  sortOn goalOrder (Set.toList (go Set.empty (goalPredecessors graph goalId)))
+ where
+  goalOrder predecessor =
+    maybe
+      maxBound
+      goalNodeSerialIndex
+      (Map.lookup predecessor (goalGraphNodes graph))
+
+  go seen frontier =
+    case Set.minView frontier of
+      Nothing -> seen
+      Just (current, rest)
+        | current `Set.member` seen -> go seen rest
+        | otherwise ->
+            go
+              (Set.insert current seen)
+              (rest <> goalPredecessors graph current)
+
+loadCodexHistoryHandoff :: IO Bool
+loadCodexHistoryHandoff = do
+  maybeValue <- lookupEnv "SOG_CODEX_HISTORY_HANDOFF"
+  pure
+    ( case fmap Text.toLower (Text.pack <$> maybeValue) of
+        Just "1" -> True
+        Just "true" -> True
+        Just "yes" -> True
+        Just "on" -> True
+        _ -> False
+    )
+
+loadConcurrentWorkspaceMode :: IO ConcurrentWorkspaceMode
+loadConcurrentWorkspaceMode = do
+  maybeValue <- lookupEnv "SOG_CONCURRENT_WORKSPACE"
+  case fmap Text.toLower (Text.pack <$> maybeValue) of
+    Nothing -> pure CopyTreeWorkspace
+    Just "" -> pure CopyTreeWorkspace
+    Just "copy-tree" -> pure CopyTreeWorkspace
+    Just "copy" -> pure CopyTreeWorkspace
+    Just "fuse" -> pure FuseEventWorkspace
+    Just other -> fail ("unknown SOG_CONCURRENT_WORKSPACE: " <> Text.unpack other)
 
 loadWorkflowSpecFromEnv :: IO (Maybe WorkflowSpec)
 loadWorkflowSpecFromEnv = do
@@ -1146,27 +1706,39 @@ experimentToolsWithShell shellToolSpec =
   , shellToolSpec
   ]
 
-loadExperimentTools :: IO [ToolSpec]
-loadExperimentTools = getCurrentDirectory >>= experimentToolsForWorkspace
+loadExperimentToolsWithControlRoot :: FilePath -> IO [ToolSpec]
+loadExperimentToolsWithControlRoot controlRoot = do
+  workspaceRoot <- normalise <$> getCurrentDirectory
+  experimentToolsForWorkspaceWithControlRoot workspaceRoot controlRoot
 
 experimentToolsForWorkspace :: FilePath -> IO [ToolSpec]
-experimentToolsForWorkspace workspaceRoot = do
+experimentToolsForWorkspace workspaceRoot =
+  experimentToolsForWorkspaceWithControlRoot
+    workspaceRoot
+    (workspaceRoot <> ".sog")
+
+experimentToolsForWorkspaceWithControlRoot
+  :: FilePath -> FilePath -> IO [ToolSpec]
+experimentToolsForWorkspaceWithControlRoot workspaceRoot controlRoot = do
   maybeSandbox <- lookupEnv "SOG_SANDBOX"
   maybeBwrap <- lookupEnv "SOG_BWRAP"
   case (maybeSandbox, maybeBwrap) of
     (Just "bwrap", _) ->
-      loadBwrapExperimentToolsAt workspaceRoot (fromMaybe "bwrap" maybeBwrap)
+      loadBwrapExperimentToolsAt
+        workspaceRoot
+        controlRoot
+        (fromMaybe "bwrap" maybeBwrap)
     (_, Just binary)
       | not (null binary) ->
-          loadBwrapExperimentToolsAt workspaceRoot binary
+          loadBwrapExperimentToolsAt workspaceRoot controlRoot binary
     _ ->
       pure (experimentToolsForPath workspaceRoot)
 
-loadBwrapExperimentToolsAt :: FilePath -> FilePath -> IO [ToolSpec]
-loadBwrapExperimentToolsAt workspaceRoot binary = do
+loadBwrapExperimentToolsAt :: FilePath -> FilePath -> FilePath -> IO [ToolSpec]
+loadBwrapExperimentToolsAt workspaceRoot controlRoot binary = do
   let normalWorkspaceRoot = normalise workspaceRoot
   let
-    bwrapRoot = normalWorkspaceRoot </> ".sog" </> "bwrap"
+    bwrapRoot = normalise controlRoot </> "bwrap"
     cacheRoot = bwrapRoot </> "cache"
     homeRoot = bwrapRoot </> "home"
     tmpRoot = bwrapRoot </> "tmp"
