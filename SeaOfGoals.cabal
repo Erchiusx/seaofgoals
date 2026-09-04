@@ -24,6 +24,7 @@ common warnings
     ghc-options: -Wall
     default-extensions:
         OverloadedStrings
+        CPP
         ImportQualifiedPost
         ScopedTypeVariables
         TemplateHaskell
@@ -39,6 +40,7 @@ library
         Agent.SeaOfGoals.Compile.Compiler
         Agent.SeaOfGoals.Compile.PromptTemplate
         Agent.SeaOfGoals.ExperimentRunner
+        Agent.SeaOfGoals.GoalContextPreload
         Agent.SeaOfGoals.Harness
         Agent.SeaOfGoals.LLM
         Agent.SeaOfGoals.LLM.Backends.GPT
@@ -46,6 +48,7 @@ library
         Agent.SeaOfGoals.Scheduling.Agentic
         Agent.SeaOfGoals.Scheduling.Compiled
         Agent.SeaOfGoals.Scheduling.ConcurrentChase
+        Agent.SeaOfGoals.Scheduling.Graph
         Agent.SeaOfGoals.Scheduling.GraphChase
         Agent.SeaOfGoals.Scheduling.MergeScheduler
         Agent.SeaOfGoals.Scheduling.Replan
@@ -91,6 +94,8 @@ library
     if flag(fuse)
         exposed-modules:
             Agent.SeaOfGoals.Workspace.Fuse.Mount
+        cpp-options:
+            -DSOG_FUSE
         build-depends:
             libfuse3 >=0.2 && <0.3
     hs-source-dirs:   lib
@@ -162,6 +167,7 @@ test-suite SeaOfGoals-agent-runner
     import:           warnings
     type:             exitcode-stdio-1.0
     main-is:          Main.hs
+    ghc-options:      -threaded
     build-depends:
         base ^>=4.21.0.0,
         SeaOfGoals

@@ -4,7 +4,7 @@ SKILL_PATH ?=
 COMPILED_GOALS_OUT ?= compiled-goals.json
 SCFG_PYTHON ?= /home/erchius/development/scfg/scfg-package/.venv/bin/python
 
-.PHONY: lint test compile-skill compile-skill-bootstrap build-workflows smoke-containerd smoke-bwrap experiment experiment-concurrent experiment-codex experiment-no-scfg experiment-nextjs-performance experiment-database-migrations experiment-mysql2postgres experiment-test-with-postgres experiment-docker-development experiments experiments-no-scfg view-trace
+.PHONY: lint test compile-skill compile-skill-with-preload-planner compile-skill-bootstrap compile-skill-bootstrap-with-preload-planner build-workflows smoke-containerd smoke-bwrap experiment experiment-concurrent experiment-codex experiment-codex-fuse experiment-codex-fuse-preload experiment-no-scfg experiment-nextjs-performance experiment-database-migrations experiment-mysql2postgres experiment-test-with-postgres experiment-docker-development experiments experiments-no-scfg view-trace
 
 lint:
 	fourmolu --config ./fourmolu.yaml -i lib/ test/ test-suite/agent-runner/ compiler/ compiler-bootstrap/ smoke/ test-fuse/
@@ -16,9 +16,17 @@ compile-skill:
 	test -n "$(SKILL_PATH)"
 	cabal run exe:SeaOfGoals-compiler -- "$(SKILL_PATH)" "$(COMPILED_GOALS_OUT)" "$(SKILL_NAME)"
 
+compile-skill-with-preload-planner:
+	test -n "$(SKILL_PATH)"
+	SOG_COMPILER_PRELOAD_PLANNER=1 cabal run exe:SeaOfGoals-compiler -- "$(SKILL_PATH)" "$(COMPILED_GOALS_OUT)" "$(SKILL_NAME)"
+
 compile-skill-bootstrap:
 	test -n "$(SKILL_PATH)"
 	cabal run exe:SeaOfGoals-compiler-bootstrap -- "$(SKILL_PATH)" "$(COMPILED_GOALS_OUT)" "$(SKILL_NAME)"
+
+compile-skill-bootstrap-with-preload-planner:
+	test -n "$(SKILL_PATH)"
+	SOG_COMPILER_PRELOAD_PLANNER=1 cabal run exe:SeaOfGoals-compiler-bootstrap -- "$(SKILL_PATH)" "$(COMPILED_GOALS_OUT)" "$(SKILL_NAME)"
 
 build-workflows:
 	$(SCFG_PYTHON) test-suite/skill-experiments/build-workflows.py
@@ -40,6 +48,14 @@ experiment-concurrent:
 experiment-codex:
 	test -n "$(SKILL_EXPERIMENT)"
 	SOG_AGENT_RUNNER=codex SOG_EXPERIMENT_DRIVER=host bash test-suite/skill-experiments/run-experiment.sh "$(SKILL_EXPERIMENT)"
+
+experiment-codex-fuse:
+	test -n "$(SKILL_EXPERIMENT)"
+	SOG_AGENT_RUNNER=codex SOG_EXPERIMENT_DRIVER=host SOG_SCHEDULER=concurrent SOG_CONCURRENT_WORKSPACE=fuse SOG_CABAL_FLAGS="-f fuse" bash test-suite/skill-experiments/run-experiment.sh "$(SKILL_EXPERIMENT)"
+
+experiment-codex-fuse-preload:
+	test -n "$(SKILL_EXPERIMENT)"
+	SOG_AGENT_RUNNER=codex SOG_EXPERIMENT_DRIVER=host SOG_SCHEDULER=concurrent SOG_CONCURRENT_WORKSPACE=fuse SOG_PRELOAD_GOAL_CONTEXT=1 SOG_CABAL_FLAGS="-f fuse" bash test-suite/skill-experiments/run-experiment.sh "$(SKILL_EXPERIMENT)"
 
 experiment-no-scfg:
 	test -n "$(SKILL_EXPERIMENT)"

@@ -11,6 +11,9 @@ import Agent.SeaOfGoals.Scheduling.Agentic
   , GoalNode (..)
   , GoalNodeId
   )
+import Agent.SeaOfGoals.Scheduling.Graph
+  ( reduceGoalGraph
+  )
 import Data.Map.Strict qualified as Map
 import Data.Set (Set)
 import Data.Set qualified as Set
@@ -44,7 +47,8 @@ applyMergeConflict graph left right = do
 
 goalGraphAddEdge :: GoalNodeId -> GoalNodeId -> GoalGraph -> GoalGraph
 goalGraphAddEdge former latter graph =
-  graph{goalGraphEdges = Set.insert (former, latter) (goalGraphEdges graph)}
+  reduceGoalGraph
+    graph{goalGraphEdges = Set.insert (former, latter) (goalGraphEdges graph)}
 
 goalGraphDescendants :: GoalGraph -> GoalNodeId -> Set GoalNodeId
 goalGraphDescendants graph start =

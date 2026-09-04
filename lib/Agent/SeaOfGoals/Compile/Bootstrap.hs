@@ -6,7 +6,7 @@ where
 import Agent.SeaOfGoals.Compile.Compiler
   ( CompiledGoal (..)
   , CompiledGoalGraph (..)
-  , compilerCodexPrompt
+  , compilerCodexPromptWithPreloadPlanner
   , parseCompiledGoalGraphText
   )
 import Agent.SeaOfGoals.ExperimentRunner
@@ -70,10 +70,13 @@ runBootstrappedCompiler :: FilePath -> FilePath -> Maybe Text -> IO ()
 runBootstrappedCompiler skillPath outputPath maybeSkillName = do
   skillText <- TextIO.readFile skillPath
   let skillName = fromMaybe "skill" maybeSkillName
+  insertPreloadPlanner <- loadCompilerPreloadPlanner
   workspace <- compilerBootstrapWorkspace skillName
+  let controlRoot = workspace <> ".sog"
   createDirectoryIfMissing True workspace
+  createDirectoryIfMissing True controlRoot
   withCurrentDirectory workspace $ do
-    runCompilerNode workspace skillName skillText
+    runCompilerNode controlRoot insertPreloadPlanner skillName skillText
     rawOutput <- TextIO.readFile (workspace </> "compiled-goals.json")
     case parseCompiledGoalGraphText rawOutput of
       Left err -> do
@@ -84,27 +87,30 @@ runBootstrappedCompiler skillPath outputPath maybeSkillName = do
         createDirectoryIfMissing True (takeDirectory outputPath)
         LazyByteString.writeFile outputPath (encode graph <> "\n")
         putStrLn ("Compiled goals written to " <> outputPath)
-        putStrLn ("Bootstrap trace written to " <> workspace </> "sog-trace.jsonl")
+        putStrLn ("Bootstrap trace written to " <> controlRoot </> "sog-trace.jsonl")
 
-runCompilerNode :: FilePath -> Text -> Text -> IO ()
-runCompilerNode workspace skillName skillText =
-  withEnv "SOG_AGENT_RUNNER" (Just "codex") $
-    withEnv "SOG_SCHEDULER" (Just "serial") $
-      withEnv "SOG_SERIAL_GOALS_TEXT" (Just (bootstrapGraphJson skillName skillText)) $
-        withEnv "SOG_TRACE_PATH" (Just (workspace </> "sog-trace.jsonl")) $
-          runPrompt "" bootstrapTaskPrompt
+runCompilerNode :: FilePath -> Bool -> Text -> Text -> IO ()
+runCompilerNode controlRoot insertPreloadPlanner skillName skillText =
+  withEnv "SOG_AGENT_RUNNER" (Just "codex")
+    $ withEnv "SOG_SCHEDULER" (Just "serial")
+    $ withEnv
+      "SOG_SERIAL_GOALS_TEXT"
+      (Just (bootstrapGraphJson insertPreloadPlanner skillName skillText))
+    $ withEnv "SOG_CONTROL_ROOT" (Just controlRoot)
+    $ withEnv "SOG_TRACE_PATH" (Just (controlRoot </> "sog-trace.jsonl"))
+    $ runPrompt "" bootstrapTaskPrompt
 
-bootstrapGraphJson :: Text -> Text -> String
-bootstrapGraphJson skillName skillText =
+bootstrapGraphJson :: Bool -> Text -> Text -> String
+bootstrapGraphJson insertPreloadPlanner skillName skillText =
   Text.unpack
     ( TextEncoding.decodeUtf8
         ( LazyByteString.toStrict
-            (encode (bootstrapGraph skillName skillText))
+            (encode (bootstrapGraph insertPreloadPlanner skillName skillText))
         )
     )
 
-bootstrapGraph :: Text -> Text -> CompiledGoalGraph
-bootstrapGraph skillName skillText =
+bootstrapGraph :: Bool -> Text -> Text -> CompiledGoalGraph
+bootstrapGraph insertPreloadPlanner skillName skillText =
   CompiledGoalGraph
     { compiledSkill = skillName <> "-compiler-bootstrap"
     , compiledGoals =
@@ -121,7 +127,10 @@ bootstrapGraph skillName skillText =
                   , "Write the compiled JSON object to /workspace/compiled-goals.json."
                   , "The file must contain only one JSON object with keys `skill` and `goals`."
                   , "After writing the file, inspect it once and report a concise summary."
-                  , compilerCodexPrompt skillName skillText
+                  , compilerCodexPromptWithPreloadPlanner
+                      insertPreloadPlanner
+                      skillName
+                      skillText
                   ]
             }
         ]
@@ -172,3 +181,15 @@ withEnv name value =
       Nothing -> unsetEnv name
       Just newValue -> setEnv name newValue
     action
+
+loadCompilerPreloadPlanner :: IO Bool
+loadCompilerPreloadPlanner = do
+  value <- lookupEnv "SOG_COMPILER_PRELOAD_PLANNER"
+  pure
+    ( case Text.toLower . Text.pack <$> value of
+        Just "1" -> True
+        Just "true" -> True
+        Just "yes" -> True
+        Just "on" -> True
+        _ -> False
+    )

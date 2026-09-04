@@ -12,24 +12,28 @@ import Agent.SeaOfGoals.Scheduling.Agentic
   , GoalNode (..)
   , GoalNodeId (..)
   )
+import Agent.SeaOfGoals.Scheduling.Graph
+  ( reduceGoalGraph
+  )
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 
 compiledGraphToGoalGraph :: CompiledGoalGraph -> GoalGraph
 compiledGraphToGoalGraph graph =
-  GoalGraph
-    { goalGraphNodes =
-        Map.fromList
-          [ (goalNodeId node, node)
-          | node <- nodes
-          ]
-    , goalGraphEdges =
-        Set.fromList
-          [ (GoalNodeId predecessor, GoalNodeId (compiledGoalId goal))
-          | goal <- compiledGoals graph
-          , predecessor <- compiledGoalPredecessors goal
-          ]
-    }
+  reduceGoalGraph
+    GoalGraph
+      { goalGraphNodes =
+          Map.fromList
+            [ (goalNodeId node, node)
+            | node <- nodes
+            ]
+      , goalGraphEdges =
+          Set.fromList
+            [ (GoalNodeId predecessor, GoalNodeId (compiledGoalId goal))
+            | goal <- compiledGoals graph
+            , predecessor <- compiledGoalPredecessors goal
+            ]
+      }
  where
   nodes =
     [ GoalNode

@@ -3,6 +3,7 @@ module Agent.SeaOfGoals.Compile.Compiler
   , CompiledGoalGraph (..)
   , compileSkill
   , compilerCodexPrompt
+  , compilerCodexPromptWithPreloadPlanner
   , parseCompiledGoalGraphText
   , runCompilerFromArgs
   , validateCompiledGoalGraph
@@ -122,10 +123,12 @@ runCompiler skillPath outputPath maybeSkillName = do
   apiKey <- lookupEnv "OPENAI_API_KEY"
   skillText <- TextIO.readFile skillPath
   model <- Text.pack . fromMaybe "gpt-5.5" <$> lookupEnv "SOG_MODEL"
+  insertPreloadPlanner <- loadCompilerPreloadPlanner
   let skillName = fromMaybe "skill" maybeSkillName
   result <-
     case runner of
-      Just "codex" -> compileSkillWithCodex skillName skillText
+      Just "codex" ->
+        compileSkillWithCodex insertPreloadPlanner skillName skillText
       _ ->
         case apiKey of
           Nothing -> do
@@ -147,11 +150,13 @@ runCompiler skillPath outputPath maybeSkillName = do
       LazyByteString.writeFile outputPath (encode graph <> "\n")
       putStrLn ("Compiled goals written to " <> outputPath)
 
-compileSkillWithCodex :: Text -> Text -> IO (Either Text CompiledGoalGraph)
-compileSkillWithCodex skillName skillText = do
+compileSkillWithCodex
+  :: Bool -> Text -> Text -> IO (Either Text CompiledGoalGraph)
+compileSkillWithCodex insertPreloadPlanner skillName skillText = do
   config <- loadCodexProcessConfigFromEnv
   workspace <- compilerCodexWorkspace skillName
-  let prompt = compilerCodexPrompt skillName skillText
+  let prompt =
+        compilerCodexPromptWithPreloadPlanner insertPreloadPlanner skillName skillText
   result <- runCodexProcess config (\_event -> pure ()) Nothing workspace prompt
   if codexProcessTimedOut result
     then pure (Left "codex compiler run timed out")
@@ -195,12 +200,17 @@ compilerCodexWorkspace skillName = do
 
 compilerCodexPrompt :: Text -> Text -> Text
 compilerCodexPrompt skillName skillText =
+  compilerCodexPromptWithPreloadPlanner False skillName skillText
+
+compilerCodexPromptWithPreloadPlanner :: Bool -> Text -> Text -> Text
+compilerCodexPromptWithPreloadPlanner insertPreloadPlanner skillName skillText =
   Text.unlines
     [ "You are running the SeaOfGoals skill compiler."
     , "Follow the system instructions exactly and return only the requested JSON object."
     , ""
     , "System instructions:"
     , compilerSystemPrompt
+    , compilerPreloadPlannerInstructions insertPreloadPlanner
     , ""
     , "User request:"
     , compilerUserPrompt skillName skillText
@@ -214,6 +224,7 @@ compileSkill
   -> Text
   -> IO (Either Text CompiledGoalGraph)
 compileSkill provider model skillName skillText = do
+  insertPreloadPlanner <- loadCompilerPreloadPlanner
   result <-
     LLM.runLLM
       provider
@@ -223,7 +234,12 @@ compileSkill provider model skillName skillText = do
             [ MessageInput
                 LLMMessage
                   { messageRole = System
-                  , messageContent = [TextPart compilerSystemPrompt]
+                  , messageContent =
+                      [ TextPart
+                          ( compilerSystemPrompt
+                              <> compilerPreloadPlannerInstructions insertPreloadPlanner
+                          )
+                      ]
                   }
             , MessageInput
                 LLMMessage
@@ -434,3 +450,33 @@ messageText message =
 contentPartText :: LLMContentPart -> Text
 contentPartText (TextPart text) = text
 contentPartText _ = ""
+
+compilerPreloadPlannerInstructions :: Bool -> Text
+compilerPreloadPlannerInstructions insertPreloadPlanner
+  | not insertPreloadPlanner = ""
+  | otherwise =
+      Text.unlines
+        [ ""
+        , "Preload planning mode is enabled."
+        , "Insert a first goal with id G000 and name `Explore workspace and plan goal context`."
+        , "G000 must be read-only with respect to /workspace. It may inspect directories and read files, but must not modify workspace files."
+        , "G000 must write exactly one JSON preload plan to /sog-control/preload-plan.json."
+        , "The preload plan must have this shape: {\"goals\":{\"G001\":[\"relative/path/from/workspace\"]}}."
+        , "The plan should map later goal ids to existing text source files that provide useful initial context for that goal."
+        , "Do not include dependency directories, build outputs, caches, generated bundles, or SeaOfGoals control files."
+        , "Keep the plan concise; prefer files the later goal would otherwise need to read before editing."
+        , "Any goal that would otherwise have no predecessor must list G000 as a predecessor, so no execution goal can start before the preload plan exists."
+        , "G000 is part of the scheduling DAG and should appear first in the goals array."
+        ]
+
+loadCompilerPreloadPlanner :: IO Bool
+loadCompilerPreloadPlanner = do
+  value <- lookupEnv "SOG_COMPILER_PRELOAD_PLANNER"
+  pure
+    ( case Text.toLower . Text.pack <$> value of
+        Just "1" -> True
+        Just "true" -> True
+        Just "yes" -> True
+        Just "on" -> True
+        _ -> False
+    )

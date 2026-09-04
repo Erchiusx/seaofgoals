@@ -12,6 +12,7 @@ import Agent.SeaOfGoals.CodexProcess
 import Agent.SeaOfGoals.Compile.Compiler
   ( CompiledGoal (..)
   , CompiledGoalGraph (..)
+  , compilerCodexPromptWithPreloadPlanner
   , validateCompiledGoalGraph
   )
 import Agent.SeaOfGoals.Config
@@ -19,6 +20,14 @@ import Agent.SeaOfGoals.Config
   , Config (..)
   , defaultConfig
   , loadConfigFile
+  )
+import Agent.SeaOfGoals.GoalContextPreload
+  ( GoalContextPreloadConfig (..)
+  , PreloadedGoalContext (..)
+  , preloadGoalContext
+  , preloadGoalContextDetailed
+  , preloadGoalContextWithPlan
+  , preloadGoalContextWithPlanDetailed
   )
 import Agent.SeaOfGoals.Harness
   ( HarnessConfig (..)
@@ -52,6 +61,9 @@ import Agent.SeaOfGoals.Scheduling.ConcurrentChase
   , ConcurrentChaseResult (..)
   , ConcurrentChaseRunner (..)
   , runConcurrentChase
+  )
+import Agent.SeaOfGoals.Scheduling.Graph
+  ( reduceGoalGraph
   )
 import Agent.SeaOfGoals.Scheduling.GraphChase
   ( ChaseEvent (..)
@@ -121,10 +133,15 @@ import Agent.SeaOfGoals.Workspace.Fuse.Store
   , writeSet
   )
 import Agent.SeaOfGoals.Workspace.Fuse.Store qualified as FuseStore
+import Agent.SeaOfGoals.Workspace.ProcessExec
+  ( ProcessExecSpec (..)
+  , runProcessExecWithStdoutLineSink
+  )
 import Agent.SeaOfGoals.Workspace.Sandbox
   ( BindMode (..)
   , ExecSpec (..)
   , ExecTimeout (..)
+  , SandboxExecOutcome (..)
   , SandboxRunner (..)
   )
 import Agent.SeaOfGoals.Workspace.Sandbox.Process
@@ -181,7 +198,11 @@ main = do
   unicodeTransportResponseBodyTest
   configFileTest
   compilerGraphValidationTest
+  compilerPreloadPlannerPromptTest
+  goalContextPreloadTest
+  goalGraphReductionTest
   codexProcessCommandTest
+  processExecStreamingStdoutTest
   bwrapCommandRenderingTest
   containerdCommandRenderingTest
   fuseStoreWorkspaceTest
@@ -309,6 +330,166 @@ compilerGraphValidationTest = do
     "compiler DAG rejects cycle"
     (not (null (validateCompiledGoalGraph cyclicCompilerGraph)))
 
+compilerPreloadPlannerPromptTest :: IO ()
+compilerPreloadPlannerPromptTest = do
+  let prompt = compilerCodexPromptWithPreloadPlanner True "demo" "raw skill"
+  assertBool
+    "compiler preload planner prompt inserts G000"
+    ("id G000" `Text.isInfixOf` prompt)
+  assertBool
+    "compiler preload planner prompt names control plan path"
+    ("/sog-control/preload-plan.json" `Text.isInfixOf` prompt)
+
+goalContextPreloadTest :: IO ()
+goalContextPreloadTest = do
+  tempRoot <- getTemporaryDirectory
+  let root = tempRoot </> "sog-goal-context-preload-test"
+  removePathForcibly root
+  createDirectoryIfMissing True (root </> "src")
+  ByteString.writeFile
+    (root </> "src" </> "ColorMenu.tsx")
+    "export const ColorMenu = 1;\n"
+  ByteString.writeFile
+    (root </> "src" </> "SearchBox.tsx")
+    "export const SearchBox = 1;\n"
+  rendered <-
+    preloadedGoalContextText
+      <$> preloadGoalContextDetailed
+        GoalContextPreloadConfig
+          { goalContextPreloadEnabled = True
+          , goalContextPreloadMaxFiles = 4
+          , goalContextPreloadMaxBytesPerFile = 1024
+          , goalContextPreloadMaxDirectoryEntries = 20
+          }
+        root
+        "Implement ColorMenu widget"
+  preloaded <-
+    preloadGoalContextDetailed
+      GoalContextPreloadConfig
+        { goalContextPreloadEnabled = True
+        , goalContextPreloadMaxFiles = 4
+        , goalContextPreloadMaxBytesPerFile = 1024
+        , goalContextPreloadMaxDirectoryEntries = 20
+        }
+      root
+      "Implement ColorMenu widget"
+  assertBool
+    "preload includes marker"
+    ("<preloaded_workspace_context>" `Text.isInfixOf` rendered)
+  assertBool
+    "preload includes selected path"
+    ("src/ColorMenu.tsx" `Text.isInfixOf` rendered)
+  assertBool
+    "preload includes selected content"
+    ("export const ColorMenu" `Text.isInfixOf` rendered)
+  assertBool
+    "preload lists unselected path"
+    ("src/SearchBox.tsx" `Text.isInfixOf` rendered)
+  assertEqual
+    "preload records selected files as reads"
+    (Set.fromList ["src/ColorMenu.tsx"])
+    (preloadedGoalContextReads preloaded)
+  plannedRendered <-
+    preloadedGoalContextText
+      <$> preloadGoalContextWithPlanDetailed
+        GoalContextPreloadConfig
+          { goalContextPreloadEnabled = True
+          , goalContextPreloadMaxFiles = 4
+          , goalContextPreloadMaxBytesPerFile = 1024
+          , goalContextPreloadMaxDirectoryEntries = 20
+          }
+        (Just ["src/SearchBox.tsx"])
+        root
+        "Implement a widget that does not name the planned file"
+  assertBool
+    "preload plan includes selected content"
+    ("export const SearchBox" `Text.isInfixOf` plannedRendered)
+  plannedPreloaded <-
+    preloadGoalContextWithPlanDetailed
+      GoalContextPreloadConfig
+        { goalContextPreloadEnabled = True
+        , goalContextPreloadMaxFiles = 4
+        , goalContextPreloadMaxBytesPerFile = 1024
+        , goalContextPreloadMaxDirectoryEntries = 20
+        }
+      (Just ["src/SearchBox.tsx"])
+      root
+      "Implement a widget that does not name the planned file"
+  assertEqual
+    "preload plan records planned files as reads"
+    (Set.fromList ["src/SearchBox.tsx"])
+    (preloadedGoalContextReads plannedPreloaded)
+  disabledRendered <-
+    preloadGoalContext
+      GoalContextPreloadConfig
+        { goalContextPreloadEnabled = False
+        , goalContextPreloadMaxFiles = 4
+        , goalContextPreloadMaxBytesPerFile = 1024
+        , goalContextPreloadMaxDirectoryEntries = 20
+        }
+      root
+      "Implement ColorMenu widget"
+  assertEqual "disabled old preload API stays empty" "" disabledRendered
+  disabledPlannedRendered <-
+    preloadGoalContextWithPlan
+      GoalContextPreloadConfig
+        { goalContextPreloadEnabled = False
+        , goalContextPreloadMaxFiles = 4
+        , goalContextPreloadMaxBytesPerFile = 1024
+        , goalContextPreloadMaxDirectoryEntries = 20
+        }
+      (Just ["src/SearchBox.tsx"])
+      root
+      "Implement SearchBox widget"
+  assertEqual
+    "disabled old planned preload API stays empty"
+    ""
+    disabledPlannedRendered
+  removePathForcibly root
+
+goalGraphReductionTest :: IO ()
+goalGraphReductionTest = do
+  let
+    graph =
+      GoalGraph
+        { goalGraphNodes =
+            Map.fromList
+              [ (goalId "G001", schedulerGoal "G001" 0)
+              , (goalId "G002", schedulerGoal "G002" 1)
+              , (goalId "G003", schedulerGoal "G003" 2)
+              ]
+        , goalGraphEdges =
+            Set.fromList
+              [ (goalId "G001", goalId "G002")
+              , (goalId "G002", goalId "G003")
+              , (goalId "G001", goalId "G003")
+              ]
+        }
+    reduced = reduceGoalGraph graph
+    converted =
+      compiledGraphToGoalGraph
+        CompiledGoalGraph
+          { compiledSkill = "test"
+          , compiledGoals =
+              [ compilerGoal "G001" []
+              , compilerGoal "G002" ["G001"]
+              , compilerGoal "G003" ["G001", "G002"]
+              ]
+          }
+
+  assertEqual
+    "goal graph reduction removes transitive edges"
+    ( Set.fromList
+        [ (goalId "G001", goalId "G002")
+        , (goalId "G002", goalId "G003")
+        ]
+    )
+    (goalGraphEdges reduced)
+  assertEqual
+    "compiled graph conversion keeps only direct predecessor edges"
+    (goalGraphEdges reduced)
+    (goalGraphEdges converted)
+
 codexProcessCommandTest :: IO ()
 codexProcessCommandTest = do
   defaults <- defaultCodexProcessConfig
@@ -323,8 +504,8 @@ codexProcessCommandTest = do
     spec =
       codexProcessExecSpec
         config
-        "/workspace/.sog/prompt.txt"
-        "/workspace/.sog/last.txt"
+        "/sog-control/prompt.txt"
+        "/sog-control/last.txt"
     view = codexProcessView config "/tmp/workspace"
     command = Bwrap.bwrapCommand (Bwrap.Config "bwrap") view spec
     rendered = Text.pack (unwords command)
@@ -335,14 +516,36 @@ codexProcessCommandTest = do
     "codex home is mounted"
     (hasSubsequence ["--bind", "/host/codex-home", "/codex-home"] command)
   assertBool
-    "codex exec reads prompt from sandbox workspace"
-    ("/workspace/.sog/prompt.txt" `Text.isInfixOf` rendered)
+    "codex exec reads prompt from sandbox control mount"
+    ("/sog-control/prompt.txt" `Text.isInfixOf` rendered)
   assertBool
-    "codex exec writes last message in sandbox workspace"
-    ("/workspace/.sog/last.txt" `Text.isInfixOf` rendered)
+    "codex exec writes last message in sandbox control mount"
+    ("/sog-control/last.txt" `Text.isInfixOf` rendered)
   assertBool
     "codex exec receives model through environment"
     (hasSubsequence ["--setenv", "SOG_MODEL", "gpt-test"] command)
+
+processExecStreamingStdoutTest :: IO ()
+processExecStreamingStdoutTest = do
+  linesRef <- newIORef []
+  outcome <-
+    runProcessExecWithStdoutLineSink
+      ProcessExecSpec
+        { processExecArgv = ["sh", "-c", "printf 'one\\ntwo\\n'"]
+        , processExecCwd = Nothing
+        , processExecEnv = Nothing
+        , processExecTimeout = ExecNoTimeout
+        }
+      (\line -> modifyIORef' linesRef (<> [line]))
+  observedLines <- readIORef linesRef
+  assertEqual
+    "streaming stdout sink sees each line"
+    ["one", "two"]
+    observedLines
+  assertEqual
+    "streaming stdout preserves full captured stdout"
+    "one\ntwo\n"
+    (sandboxExecStdout outcome)
 
 bwrapCommandRenderingTest :: IO ()
 bwrapCommandRenderingTest = do
@@ -383,9 +586,9 @@ bwrapCommandRenderingTest = do
     "bwrap command rewrites HOME"
     (hasSubsequence ["--setenv", "HOME", "/home/sog"] command)
   assertBool
-    "bwrap command redirects cabal store into workspace"
+    "bwrap command redirects cabal store outside workspace"
     ( hasSubsequence
-        ["--setenv", "CABAL_STORE_DIR", "/workspace/.sog/cabal-store"]
+        ["--setenv", "CABAL_STORE_DIR", "/cache/cabal-store"]
         command
     )
   assertBool
