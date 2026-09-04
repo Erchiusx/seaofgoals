@@ -36,10 +36,10 @@ docker compose up --build runner
 ```
 
 Each run starts by replacing `runs/current` with a fresh copy of `fixture`.
-The trace is written inside the run workspace as:
+The trace is written outside the run workspace as:
 
 ```text
-experiments/mysql2postgres/runs/current/sog-trace.jsonl
+test-suite/skill-experiments/mysql2postgres/runs/control-current/sog-trace.jsonl
 ```
 
 ## Why Compose
@@ -53,4 +53,4 @@ Compose provides a clean PostgreSQL service without Docker-in-Docker. The agent'
 - `fs:src/main/java/com/example/demo/dal/mysql/DemoEntityDO.java`
 - `fs:migrations/001_mysql_schema.sql`
 - `db:postgres/schema`
-- `artifact:sog-trace.jsonl`
+- `artifact:runs/control-current/sog-trace.jsonl`

@@ -1,0 +1,7 @@
+{
+  "type": "module",
+  "scripts": {
+    "check": "node scripts/check-port-widget.js"
+  },
+  "devDependencies": {}
+}

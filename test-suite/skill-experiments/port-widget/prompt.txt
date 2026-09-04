@@ -1,0 +1,29 @@
+You are testing the port-widget skill.
+
+Task:
+Port the existing InstantSearch connector `connectColorMenu` into a user-facing `colorMenu` widget across the minimal repository in /workspace.
+
+Before each meaningful step, call begin_subgoal if the tool is available.
+After each step, call end_subgoal if the tool is available.
+Use shell for local inspection commands and edits.
+Do not install dependencies or call external APIs.
+When searching the workspace, exclude sog-trace.jsonl and other generated trace/log files.
+
+Concrete fixture requirements:
+- Run the audit first: python3 scripts/audit_widget_coverage.py color-menu
+- Keep the existing connector unchanged.
+- Create packages/instantsearch.js/src/widgets/color-menu/color-menu.tsx.
+- Export colorMenu from packages/instantsearch.js/src/widgets/index.ts and index.umd.ts.
+- Create packages/react-instantsearch-core/src/connectors/useColorMenu.ts.
+- Export useColorMenu from packages/react-instantsearch-core/src/index.ts.
+- Create packages/react-instantsearch/src/ui/ColorMenu.tsx.
+- Create packages/react-instantsearch/src/widgets/ColorMenu.tsx.
+- Export ColorMenu from packages/react-instantsearch/src/widgets/index.ts and index.umd.ts.
+- Add ColorMenu to packages/react-instantsearch/src/widgets/__tests__/__utils__/all-widgets.tsx.
+- Create packages/vue-instantsearch/src/components/ColorMenu.vue.
+- Export AisColorMenu from packages/vue-instantsearch/src/widgets.js.
+- Add tests/common/widgets/color-menu/default.ts.
+- Register color-menu in each common-widgets.test file.
+- Replace the Vue placeholder that says color-menu is not supported.
+- Validate with: node scripts/check-port-widget.js
+

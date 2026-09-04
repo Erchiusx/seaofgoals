@@ -16,5 +16,5 @@ make experiment-docker-development
 The trace is written to:
 
 ```text
-test-suite/skill-experiments/docker-development/runs/current/sog-trace.jsonl
+test-suite/skill-experiments/docker-development/runs/control-current/sog-trace.jsonl
 ```

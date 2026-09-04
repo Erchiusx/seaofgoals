@@ -1,0 +1,8 @@
+{
+  "type": "module",
+  "scripts": {
+    "check": "node scripts/check-add-trigger.js"
+  },
+  "devDependencies": {}
+}
+

@@ -1,0 +1,22 @@
+{
+  "name": "@backstage/plugin-reports",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      "package.json": ["package.json"]
+    }
+  },
+  "dependencies": {
+    "@backstage/core-components": "^0.15.0",
+    "@backstage/core-plugin-api": "^1.9.0"
+  },
+  "scripts": {
+    "check": "node scripts/check-plugin-nfs.js"
+  }
+}
+

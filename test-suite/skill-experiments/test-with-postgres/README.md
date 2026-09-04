@@ -13,5 +13,5 @@ make experiment-test-with-postgres
 The trace is written to:
 
 ```text
-test-suite/skill-experiments/test-with-postgres/runs/current/sog-trace.jsonl
+test-suite/skill-experiments/test-with-postgres/runs/control-current/sog-trace.jsonl
 ```

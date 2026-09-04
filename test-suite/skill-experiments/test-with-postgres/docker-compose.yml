@@ -23,7 +23,8 @@ services:
         condition: service_healthy
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
-      SOG_TRACE_PATH: /workspace/sog-trace.jsonl
+      SOG_TRACE_PATH: /sog-control/sog-trace.jsonl
+      SOG_CONTROL_ROOT: /sog-control
       SOG_CONFIG: ${SOG_CONFIG:-/seaofgoals.config.json}
       SOG_SCHEDULER: ${SOG_SCHEDULER:-serial}
       SOG_AGENT_RUNNER: ${SOG_AGENT_RUNNER:-harness}
@@ -40,6 +41,7 @@ services:
       - ${SOG_EXECUTABLE:?set SOG_EXECUTABLE to the built SeaOfGoals binary}:/usr/local/bin/SeaOfGoals:ro
       - ./fixture:/seed:ro
       - ./runs/current:/workspace
+      - ./runs/control-current:/sog-control
       - ./prompt.txt:/prompt.txt:ro
       - ${SOG_CONFIG_FILE:?set SOG_CONFIG_FILE to the SeaOfGoals config file}:/seaofgoals.config.json:ro
       - ${SOG_CODEX_HOME_HOST:?set SOG_CODEX_HOME_HOST to host CODEX_HOME}:/codex-home

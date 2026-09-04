@@ -1,0 +1,23 @@
+You are testing the add-trigger skill.
+
+Task:
+Create webhook triggers for the Acme CRM service in /workspace.
+
+Use the local research note at docs/acme-webhooks.md as the service documentation. Do not call external APIs.
+Before each meaningful step, call begin_subgoal if the tool is available.
+After each step, call end_subgoal if the tool is available.
+Use shell for local inspection commands and edits.
+When searching the workspace, exclude sog-trace.jsonl and other generated trace/log files.
+
+Concrete fixture requirements:
+- Create apps/sim/triggers/acmecrm/utils.ts with trigger options, setup instructions, extra fields, and outputs.
+- Create apps/sim/triggers/acmecrm/ticket_created.ts as the primary trigger with includeDropdown: true.
+- Create apps/sim/triggers/acmecrm/ticket_updated.ts as a secondary trigger without includeDropdown.
+- Create apps/sim/triggers/acmecrm/webhook.ts as a generic webhook trigger without includeDropdown.
+- Create apps/sim/triggers/acmecrm/index.ts barrel exports.
+- Register all three triggers in apps/sim/triggers/registry.ts.
+- Enable triggers in apps/sim/blocks/blocks/acmecrm.ts, list all trigger IDs, and spread each trigger's subBlocks after normal tool fields.
+- Add provider-specific formatWebhookInput handling in apps/sim/triggers/webhook-input.ts because the Acme payload wraps event data under `data`.
+- Do not add automatic webhook registration; the local docs say Acme CRM supports manual webhook setup only.
+- Validate with: node scripts/check-add-trigger.js
+

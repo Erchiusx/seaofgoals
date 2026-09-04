@@ -1,0 +1,25 @@
+You are testing the plugin-new-frontend-system-support skill.
+
+Task:
+Add new frontend system support to the existing Backstage `reports` plugin in /workspace while keeping the old frontend system entry point working.
+
+Before each meaningful step, call begin_subgoal if the tool is available.
+After each step, call end_subgoal if the tool is available.
+Use shell for local inspection commands and edits.
+Do not install dependencies or call external APIs.
+When searching the workspace, exclude sog-trace.jsonl and other generated trace/log files.
+
+Concrete fixture requirements:
+- Preserve the existing old-system plugin in src/plugin.ts.
+- Add a new-system page variant for ReportsPage that does not render Page, PageWithHeader, or ContentHeader.
+- Reuse the existing rootRouteRef directly.
+- Add defaultTarget: 'catalog.catalogEntity' to the optional catalogEntityRouteRef.
+- Convert the reportsApiRef factory to an ApiBlueprint extension.
+- Create src/alpha.tsx with createFrontendPlugin and PageBlueprint.
+- Include the API blueprint in the alpha plugin extensions.
+- Re-export the NFS ReportsPage variant from ./alpha as ReportsPage for adopter overrides.
+- Keep route refs and the API ref exported from src/index.ts, not from ./alpha.
+- Add ./alpha to package.json exports and typesVersions.
+- Add @backstage/frontend-plugin-api and @backstage/ui dependencies if they are imported.
+- Validate with: node scripts/check-plugin-nfs.js
+

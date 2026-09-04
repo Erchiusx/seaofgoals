@@ -8,11 +8,13 @@ Each experiment has:
 - `prompt.txt`: harness task prompt.
 - `docker-compose.yml`: dependency and runner environment.
 - `runs/workspaces/<run-id>/`: cached workspace from one run.
+- `runs/control/<run-id>/`: trace, Codex history, and scheduler state for one run.
 - `runs/current`: symlink to the active run workspace, ignored by git.
+- `runs/control-current`: symlink to the active run control directory, ignored by git.
 
 The launcher creates run ids as `uuid--UTC-time--experiment-name`, for example `2f4...--20260811T120000Z--mysql2postgres`. Set `SOG_RUN_ID=...` to choose a name explicitly.
 
-The runner mounts only `runs/current` at `/workspace`; it does not mount the parent `runs/` directory, so the agent cannot inspect previous run outputs through the workspace mount. Each run updates only the `runs/current` symlink target and keeps older workspaces under `runs/workspaces/`.
+The runner mounts only `runs/current` at `/workspace`; it does not mount the parent `runs/` directory, so the agent cannot inspect previous run outputs through the workspace mount. Trace and scheduler control state are mounted separately at `/sog-control` for the harness and are not under `/workspace`. Each run updates only the `runs/current` and `runs/control-current` symlink targets and keeps older workspaces under `runs/workspaces/` plus older control state under `runs/control/`.
 
 Run from the repository root:
 
@@ -25,10 +27,11 @@ make experiment-codex SKILL_EXPERIMENT=nextjs-performance
 
 `make experiment-concurrent SKILL_EXPERIMENT=...` sets
 `SOG_SCHEDULER=concurrent`. In this mode, every ready goal runs in its own
-workspace copy under `.sog/concurrent/goals/`; accepted results are merged back
-into the run workspace. The current merge baseline detects file write/write
-conflicts and replans the serially later goal. It does not yet detect read/write
-conflicts from shell-level read tracing.
+workspace copy under `runs/control-current/concurrent/goals/`; accepted results
+are merged back into the run workspace. The copy-tree merge baseline detects
+file write/write conflicts and replans the serially later goal. The FUSE event
+mode records workspace reads/writes from the mounted workspace and uses those
+events for conflict checks.
 
 `docker-development` is kept as a fixture candidate but is not part of the
 current test set, because it would require reasoning about Docker access from
@@ -52,9 +55,11 @@ SOG_SCHEDULER=concurrent make experiment-codex SKILL_EXPERIMENT=nextjs-performan
 ```
 
 Each run creates a fresh workspace under `<experiment>/runs/workspaces/` and
-updates `<experiment>/runs/current` to point at it. If a merge conflict is
-detected, the scheduler keeps the serially earlier result, updates the DAG, and
-reruns the serially later goal. The trace records `merge_conflict`,
+updates `<experiment>/runs/current` to point at it. It also creates a matching
+control directory under `<experiment>/runs/control/` and updates
+`<experiment>/runs/control-current`. If a merge conflict is detected, the
+scheduler keeps the serially earlier result, updates the DAG, and reruns the
+serially later goal. The trace records `merge_conflict`,
 `merge_accept`, and `dag_snapshot` events so the recovery path can be inspected
 after the run.
 
@@ -65,7 +70,7 @@ current default concurrent chase parallelism is 4.
 Set `SOG_SANDBOX=bwrap` to run the harness `shell` tool inside a bwrap view.
 The model still runs through the host harness process, but shell commands see
 the current run workspace at `/workspace`, with cache/home/tmp writes redirected
-under `/workspace/.sog/bwrap/`.
+under the control directory instead of `/workspace`.
 
 Set `SOG_WORKFLOW_SPEC=/path/to/workflow.json` to make the runner follow a static CFG exported from an SCFG-style analysis. The JSON shape is intentionally small:
 
