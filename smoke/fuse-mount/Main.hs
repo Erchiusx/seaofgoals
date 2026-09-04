@@ -96,8 +96,35 @@ mountedAssertions backend handle base store mountPath = do
     "main = putStrLn \"old\"\n"
     =<< readCommand "cat" [mountPath </> "src" </> "Main.hs"] ""
 
+  putStrLn "checking bwrap can bind the mounted workspace"
+  assertEqual
+    "bwrap reads mounted workspace"
+    "main = putStrLn \"old\"\n"
+    =<< readCommand
+      "python3"
+      [ "-c"
+      , unlines
+          [ "import os, sys"
+          , "fd = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECTORY)"
+          , "os.set_inheritable(fd, True)"
+          , "os.execvp('bwrap', ["
+          , "    'bwrap', '--die-with-parent', '--tmpfs', '/',"
+          , "    '--dir', '/usr', '--ro-bind', '/usr', '/usr',"
+          , "    '--dir', '/lib', '--ro-bind', '/lib', '/lib',"
+          , "    '--dir', '/lib64', '--ro-bind', '/lib64', '/lib64',"
+          , "    '--symlink', 'usr/bin', '/bin',"
+          , "    '--dir', '/workspace', '--bind-fd', str(fd), '/workspace',"
+          , "    '--chdir', '/workspace', '--', '/bin/cat', 'src/Main.hs',"
+          , "])"
+          ]
+      , mountPath
+      ]
+      ""
+
   putStrLn "checking writes and unlink through kernel mount"
+  runCommand "mkdir" [mountPath </> "generated"] ""
   runCommand "tee" [mountPath </> "README.md"] "hello\n"
+  runCommand "tee" [mountPath </> "generated" </> "Nested.md"] "nested\n"
   runCommand "tee" [mountPath </> "src" </> "Main.hs"] "main = putStrLn \"new\"\n"
   runCommand "rm" [mountPath </> "src" </> "Obsolete.hs"] ""
 
@@ -109,6 +136,12 @@ mountedAssertions backend handle base store mountPath = do
   localCreated <-
     doesFileExist (store </> "mount-smoke" </> "files" </> "README.md")
   assertBool "mounted workspace stores created file locally" localCreated
+  nestedCreated <-
+    doesFileExist
+      (store </> "mount-smoke" </> "files" </> "generated" </> "Nested.md")
+  assertBool
+    "mounted workspace stores files in created directories locally"
+    nestedCreated
 
   finalized <- finalizeWorkspace backend handle
   case finalized of
@@ -117,6 +150,8 @@ mountedAssertions backend handle base store mountPath = do
       assertEqual
         "mounted workspace diff records writes and deletion"
         [ PathCreated "README.md"
+        , PathCreated "generated"
+        , PathCreated ("generated" </> "Nested.md")
         , PathModified ("src" </> "Main.hs")
         , PathDeleted ("src" </> "Obsolete.hs")
         ]

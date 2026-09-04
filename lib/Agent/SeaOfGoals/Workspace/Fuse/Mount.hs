@@ -19,13 +19,17 @@ import Control.Concurrent
   , forkIO
   , killThread
   , newEmptyMVar
+  , newMVar
   , putMVar
   , readMVar
+  , threadDelay
   , tryPutMVar
+  , withMVar
   )
 import Control.Exception
   ( IOException
   , SomeException
+  , onException
   , throwIO
   , toException
   , try
@@ -55,6 +59,7 @@ import System.IO
   , hPutStrLn
   , stderr
   )
+import System.IO.Unsafe (unsafePerformIO)
 import System.LibFuse3
   ( FileStat
   , FuseOperations (..)
@@ -84,39 +89,77 @@ mountFuseWorkspace :: Handle -> Mount -> IO FuseMountHandle
 mountFuseWorkspace handle mount = do
   ready <- newEmptyMVar
   threadId <-
-    forkIO $ do
-      result <-
-        try
-          ( withArgs [mountHostPath mount, "-f"] $
-              fuseMain
-                (fuseWorkspaceOperationsWithReady (Just ready) handle)
-                defaultExceptionHandler
+    withMVar fuseArgsLock $ \() ->
+      withArgs [mountHostPath mount, "-f"] $ do
+        threadId <-
+          forkIO $ do
+            result <-
+              try
+                ( fuseMain
+                    (fuseWorkspaceOperationsWithReady (Just ready) handle)
+                    defaultExceptionHandler
+                )
+            case result of
+              Right () -> do
+                _ <-
+                  tryPutMVar
+                    ready
+                    (Left (toException (userError "FUSE exited before mount became ready")))
+                pure ()
+              Left err -> do
+                _ <- tryPutMVar ready (Left err)
+                pure ()
+        readiness <- timeout 5000000 (readMVar ready)
+        ( case readiness of
+            Just (Right ()) -> waitForMountPoint (mountHostPath mount)
+            Just (Left err) -> throwIO err
+            Nothing ->
+              ioError
+                ( userError
+                    ("timed out mounting FUSE workspace: " <> mountHostPath mount)
+                )
           )
-      case result of
-        Right () -> do
-          _ <-
-            tryPutMVar
-              ready
-              (Left (toException (userError "FUSE exited before mount became ready")))
-          pure ()
-        Left err -> do
-          _ <- tryPutMVar ready (Left err)
-          pure ()
-  readiness <- timeout 5000000 (readMVar ready)
-  case readiness of
-    Just (Right ()) -> pure ()
-    Just (Left err) -> throwIO err
-    Nothing -> do
-      killThread threadId
-      ioError
-        ( userError
-            ("timed out mounting FUSE workspace: " <> mountHostPath mount)
-        )
+          `onException` cleanupFuseThread threadId (mountHostPath mount)
+        pure threadId
   pure
     FuseMountHandle
       { fuseMountThreadId = threadId
       , fuseMountHostPath = mountHostPath mount
       }
+
+fuseArgsLock :: MVar ()
+fuseArgsLock = unsafePerformIO (newMVar ())
+{-# NOINLINE fuseArgsLock #-}
+
+waitForMountPoint :: FilePath -> IO ()
+waitForMountPoint path = do
+  ready <- timeout 5000000 (go)
+  case ready of
+    Just () -> pure ()
+    Nothing ->
+      ioError (userError ("timed out waiting for FUSE mountpoint: " <> path))
+ where
+  go = do
+    mounted <- isMountPoint path
+    if mounted
+      then pure ()
+      else threadDelay 50000 >> go
+
+isMountPoint :: FilePath -> IO Bool
+isMountPoint path = do
+  result <-
+    try (readProcessWithExitCode "findmnt" ["-rn", "--mountpoint", path] "")
+      :: IO (Either IOException (ExitCode, String, String))
+  pure $ case result of
+    Right (ExitSuccess, _, _) -> True
+    _ -> False
+
+cleanupFuseThread :: ThreadId -> FilePath -> IO ()
+cleanupFuseThread threadId path = do
+  _ <-
+    try (readProcessWithExitCode "fusermount3" ["-u", path] "")
+      :: IO (Either IOException (ExitCode, String, String))
+  killThread threadId
 
 unmountFuseWorkspace :: FuseMountHandle -> IO ()
 unmountFuseWorkspace handle = do
@@ -140,6 +183,8 @@ fuseWorkspaceOperationsWithReady ready handle =
     , fuseOpendir = Just (opendir handle)
     , fuseReaddir = Just (readdir handle)
     , fuseReleasedir = Just (\_ _ -> pure eOK)
+    , fuseMkdir = Just (makeDirectory handle)
+    , fuseRmdir = Just (removeDirectory handle)
     , fuseOpen = Just (openFile handle)
     , fuseCreate = Just (createFile handle)
     , fuseRead = Just (readFileAt handle)
@@ -147,6 +192,7 @@ fuseWorkspaceOperationsWithReady ready handle =
     , fuseTruncate = Just (truncateFile handle)
     , fuseUnlink = Just (unlinkFile handle)
     , fuseRename = Just (renameFile handle)
+    , fuseUtimens = Just (updateTimes handle)
     , fuseAccess = Just (accessPath handle)
     , fuseInit =
         Just
@@ -215,6 +261,36 @@ createFile handle path _ _ _ = do
     Store.writeFile handle storePath ""
     pure storePath
   pure result
+
+makeDirectory :: Handle -> FilePath -> FileMode -> IO Errno
+makeDirectory handle path _ =
+  debugFuse ("mkdir " <> path)
+    >> either id (const eOK)
+      <$> tryErrno
+        ( do
+            storePath <- fusePathToStorePath path
+            Store.createDirectory handle storePath
+        )
+
+removeDirectory :: Handle -> FilePath -> IO Errno
+removeDirectory handle path =
+  debugFuse ("rmdir " <> path)
+    >> either id (const eOK)
+      <$> tryErrno
+        ( do
+            storePath <- fusePathToStorePath path
+            Store.deletePath handle storePath
+        )
+
+updateTimes :: Handle -> FilePath -> Maybe FilePath -> a -> b -> IO Errno
+updateTimes handle path _ _ _ =
+  debugFuse ("utimens " <> path)
+    >> either id (const eOK)
+      <$> tryErrno
+        ( do
+            storePath <- fusePathToStorePath path
+            Store.touchPath handle storePath
+        )
 
 readFileAt
   :: Handle
@@ -310,7 +386,9 @@ tryErrno action = do
   result <- try action :: IO (Either SomeException a)
   case result of
     Right value -> pure (Right value)
-    Left _ -> pure (Left eIO)
+    Left err -> do
+      debugFuse ("callback error: " <> show err)
+      pure (Left eIO)
 
 debugFuse :: String -> IO ()
 debugFuse message = do

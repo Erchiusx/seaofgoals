@@ -6,12 +6,14 @@ module Agent.SeaOfGoals.Workspace.Fuse.Store
   , Spec (..)
   , PathIdentity (..)
   , Access (..)
+  , createDirectory
   , deletePath
   , listDirectory
   , localPath
   , readFile
   , renamePath
   , statPath
+  , touchPath
   , truncateFile
   , accessConflict
   , accessLog
@@ -35,6 +37,9 @@ import Agent.SeaOfGoals.Workspace.Backend qualified as Workspace
 import Control.Exception
   ( IOException
   , try
+  )
+import Control.Monad
+  ( when
   )
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
@@ -212,7 +217,7 @@ readFile :: Handle -> FilePath -> IO ByteString
 readFile handle path = do
   relativePath <- normalizePath path
   recordAccess handle (ContentRead relativePath)
-  tombstoned <- doesPathExist (tombstonePath handle relativePath)
+  tombstoned <- pathIsTombstoned handle relativePath
   if tombstoned
     then ioError (userError ("workspace path was deleted: " <> relativePath))
     else do
@@ -267,9 +272,36 @@ truncateFile handle path size = do
         else existing <> ByteString.replicate (fromInteger size - currentSize) 0
   writeFile handle relativePath newContent
 
+touchPath :: Handle -> FilePath -> IO ()
+touchPath handle path = do
+  relativePath <- normalizePath path
+  observeBeforeChange handle relativePath
+  existed <- pathExistsInView handle relativePath
+  if existed
+    then do
+      recordAccess handle (FileModified relativePath)
+      recordChange handle relativePath (PathModified relativePath)
+    else writeFile handle relativePath ""
+
+createDirectory :: Handle -> FilePath -> IO ()
+createDirectory handle path = do
+  relativePath <- normalizePath path
+  observeBeforeChange handle relativePath
+  existed <- pathExistsInView handle relativePath
+  if existed
+    then ioError (userError ("workspace path already exists: " <> relativePath))
+    else do
+      let destination = localFilePath handle relativePath
+      createDirectoryIfMissing True destination
+      removeTombstone handle relativePath
+      recordAccess handle (FileCreated relativePath)
+      recordChange handle relativePath (PathCreated relativePath)
+
 deletePath :: Handle -> FilePath -> IO ()
 deletePath handle path = do
   relativePath <- normalizePath path
+  when (relativePath == ".") $
+    ioError (userError "cannot delete workspace root")
   observeBeforeChange handle relativePath
   existed <- pathExistsInView handle relativePath
   if existed
@@ -304,7 +336,7 @@ statPath :: Handle -> FilePath -> IO (Maybe FilePath)
 statPath handle path = do
   relativePath <- normalizePath path
   recordAccess handle (MetadataRead relativePath)
-  tombstoned <- doesPathExist (tombstonePath handle relativePath)
+  tombstoned <- pathIsTombstoned handle relativePath
   if tombstoned
     then pure Nothing
     else do
@@ -325,7 +357,7 @@ listDirectory :: Handle -> FilePath -> IO [FilePath]
 listDirectory handle path = do
   relativePath <- normalizePath path
   recordAccess handle (DirectoryRead relativePath)
-  tombstoned <- doesPathExist (tombstonePath handle relativePath)
+  tombstoned <- pathIsTombstoned handle relativePath
   if tombstoned
     then ioError (userError ("workspace directory was deleted: " <> relativePath))
     else do
@@ -409,7 +441,7 @@ combineChange new _old = new
 
 pathExistsInView :: Handle -> FilePath -> IO Bool
 pathExistsInView handle relativePath = do
-  tombstoned <- doesPathExist (tombstonePath handle relativePath)
+  tombstoned <- pathIsTombstoned handle relativePath
   if tombstoned
     then pure False
     else do
@@ -434,6 +466,11 @@ removeTombstone handle relativePath = do
     try (removeFile (tombstonePath handle relativePath))
       :: IO (Either IOException ())
   either (const (pure ())) pure result
+
+pathIsTombstoned :: Handle -> FilePath -> IO Bool
+pathIsTombstoned _ "." = pure False
+pathIsTombstoned handle relativePath =
+  doesFileExist (tombstonePath handle relativePath)
 
 readFileOrEmpty :: Handle -> FilePath -> IO ByteString
 readFileOrEmpty handle relativePath = do
