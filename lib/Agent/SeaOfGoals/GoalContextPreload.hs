@@ -15,12 +15,22 @@ module Agent.SeaOfGoals.GoalContextPreload
   )
 where
 
+import Agent.SeaOfGoals.LLM
+  ( LLMContentPart (TextPart)
+  , LLMInputItem (MessageInput, ToolCallInput, ToolResultInput)
+  , LLMMessage (..)
+  , LLMRole (Assistant)
+  , ToolCall (..)
+  , ToolResult (..)
+  )
 import Control.Monad (forM)
 import Data.Aeson
   ( FromJSON (..)
   , eitherDecode
+  , object
   , withObject
   , (.:)
+  , (.=)
   )
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
@@ -63,6 +73,7 @@ newtype GoalContextPreloadPlan = GoalContextPreloadPlan
 
 data PreloadedGoalContext = PreloadedGoalContext
   { preloadedGoalContextText :: Text
+  , preloadedGoalContextHistory :: [LLMInputItem]
   , preloadedGoalContextReads :: Set FilePath
   }
   deriving stock (Eq, Show)
@@ -154,6 +165,7 @@ preloadGoalContextWithPlanDetailed config maybePlannedFiles workspaceRoot prompt
       pure
         PreloadedGoalContext
           { preloadedGoalContextText = ""
+          , preloadedGoalContextHistory = []
           , preloadedGoalContextReads = Set.empty
           }
   | otherwise = do
@@ -167,6 +179,8 @@ preloadGoalContextWithPlanDetailed config maybePlannedFiles workspaceRoot prompt
         PreloadedGoalContext
           { preloadedGoalContextText =
               renderPreloadedGoalContext config files selected renderedFiles
+          , preloadedGoalContextHistory =
+              renderPreloadedGoalContextHistory config files selected renderedFiles
           , preloadedGoalContextReads = Set.fromList selected
           }
 
@@ -193,16 +207,121 @@ renderPreloadedGoalContext config files selected renderedFiles =
     , Text.unlines (fmap (("- " <>) . Text.pack) selected)
     , ""
     , "Preloaded file contents:"
-    , Text.intercalate "\n" (fmap renderOne renderedFiles)
+    , Text.intercalate "\n" (fmap renderPreloadedFile renderedFiles)
     , "</preloaded_workspace_context>"
     ]
- where
-  renderOne (relativePath, content) =
-    Text.unlines
-      [ "BEGIN FILE " <> Text.pack relativePath
-      , content
-      , "END FILE " <> Text.pack relativePath
+
+renderPreloadedFile :: (FilePath, Text) -> Text
+renderPreloadedFile (relativePath, content) =
+  Text.unlines
+    [ "BEGIN FILE " <> Text.pack relativePath
+    , content
+    , "END FILE " <> Text.pack relativePath
+    ]
+
+renderPreloadedGoalContextHistory
+  :: GoalContextPreloadConfig
+  -> [FilePath]
+  -> [FilePath]
+  -> [(FilePath, Text)]
+  -> [LLMInputItem]
+renderPreloadedGoalContextHistory config files selected renderedFiles
+  | null selected =
+      [ MessageInput
+          LLMMessage
+            { messageRole = Assistant
+            , messageContent =
+                [ TextPart
+                    "I have completed the initial workspace exploration for this goal. The workspace has no selected preloaded files, so I will continue from the file listing already observed."
+                ]
+            }
       ]
+  | otherwise =
+      [ ToolCallInput listingCall
+      , ToolResultInput listingResult
+      , ToolCallInput filesCall
+      , ToolResultInput filesResult
+      , MessageInput
+          LLMMessage
+            { messageRole = Assistant
+            , messageContent =
+                [ TextPart
+                    "I have completed the initial workspace exploration for this goal. I will use the observed file listing and preloaded file contents before deciding whether any extra reads are necessary."
+                ]
+            }
+      ]
+ where
+  listingCall =
+    ToolCall
+      { toolCallId = "sog_preload_listing"
+      , toolCallName = "shell"
+      , toolCallArguments =
+          object
+            [ "command"
+                .= ( "find . -type f | sed 's#^./##' | sort | head -n "
+                       <> show (goalContextPreloadMaxDirectoryEntries config)
+                   )
+            ]
+      }
+  listingResult =
+    ToolResult
+      { toolResultCallId = toolCallId listingCall
+      , toolResultName = Just (toolCallName listingCall)
+      , toolResultContent =
+          [ TextPart
+              ( Text.unlines
+                  [ "exit_code: 0"
+                  , "timed_out: false"
+                  , "stdout:"
+                  , Text.unlines
+                      ( fmap
+                          Text.pack
+                          (take (goalContextPreloadMaxDirectoryEntries config) (sort files))
+                      )
+                  , "stderr:"
+                  ]
+              )
+          ]
+      }
+  filesCall =
+    ToolCall
+      { toolCallId = "sog_preload_files"
+      , toolCallName = "shell"
+      , toolCallArguments =
+          object
+            [ "command"
+                .= Text.intercalate
+                  " && "
+                  (fmap catCommand selected)
+            ]
+      }
+  filesResult =
+    ToolResult
+      { toolResultCallId = toolCallId filesCall
+      , toolResultName = Just (toolCallName filesCall)
+      , toolResultContent =
+          [ TextPart
+              ( Text.unlines
+                  [ "exit_code: 0"
+                  , "timed_out: false"
+                  , "stdout:"
+                  , Text.intercalate "\n" (fmap renderPreloadedFile renderedFiles)
+                  , "stderr:"
+                  ]
+              )
+          ]
+      }
+  catCommand relativePath =
+    "printf '%s\\n' "
+      <> shellSingleQuote ("BEGIN FILE " <> Text.pack relativePath)
+      <> " && cat "
+      <> shellSingleQuote (Text.pack relativePath)
+      <> " && printf '%s\\n' "
+      <> shellSingleQuote ("END FILE " <> Text.pack relativePath)
+
+shellSingleQuote :: Text -> Text
+shellSingleQuote text =
+  "'" <> Text.replace "'" "'\"'\"'" text <> "'"
 
 selectGoalFiles :: Maybe [FilePath] -> Text -> [FilePath] -> [FilePath]
 selectGoalFiles maybePlannedFiles prompt files =

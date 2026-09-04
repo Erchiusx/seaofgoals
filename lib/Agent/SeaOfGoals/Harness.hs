@@ -45,6 +45,7 @@ data HarnessConfig provider = HarnessConfig
   , harnessRequestTemplate :: LLMRequest
   , harnessSystemPrompt :: Text
   , harnessUserPrompt :: Text
+  , harnessInitialHistorySuffix :: [LLMInputItem]
   , harnessTools :: [ToolSpec]
   , harnessMaxTurns :: Int
   , harnessEventSink :: HarnessEvent -> IO ()
@@ -81,6 +82,7 @@ runHarness config = do
                 , messageContent = [TextPart (harnessUserPrompt config)]
                 }
           ]
+            <> harnessInitialHistorySuffix config
       , harnessActiveSubgoal = Nothing
       , harnessWorkflowStatus = emptyWorkflowStatus
       }

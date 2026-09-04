@@ -1,6 +1,7 @@
 module Agent.SeaOfGoals.LLM.Backends.GPT
   ( GPTBackend (..)
   , defaultGPTEndpoint
+  , loadGPTEndpointFromEnv
   )
 where
 
@@ -48,6 +49,7 @@ import Data.Maybe (catMaybes)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import System.Environment (lookupEnv)
 
 data GPTBackend = GPTBackend
   { gptApiKey :: String
@@ -57,6 +59,32 @@ data GPTBackend = GPTBackend
 
 defaultGPTEndpoint :: String
 defaultGPTEndpoint = "https://api.openai.com/v1/chat/completions"
+
+loadGPTEndpointFromEnv :: IO String
+loadGPTEndpointFromEnv = do
+  maybeChatCompletionsUrl <- lookupEnv "OPENAI_CHAT_COMPLETIONS_URL"
+  maybeBaseUrl <- lookupEnv "OPENAI_BASE_URL"
+  pure $
+    firstNonEmpty
+      defaultGPTEndpoint
+      [ maybeChatCompletionsUrl
+      , fmap chatCompletionsUrl maybeBaseUrl
+      ]
+
+chatCompletionsUrl :: String -> String
+chatCompletionsUrl baseUrl =
+  stripTrailingSlash baseUrl <> "/chat/completions"
+
+stripTrailingSlash :: String -> String
+stripTrailingSlash =
+  reverse . dropWhile (== '/') . reverse
+
+firstNonEmpty :: String -> [Maybe String] -> String
+firstNonEmpty fallback [] = fallback
+firstNonEmpty fallback (Nothing : rest) = firstNonEmpty fallback rest
+firstNonEmpty fallback (Just value : rest)
+  | null value = firstNonEmpty fallback rest
+  | otherwise = value
 
 instance LLM GPTBackend where
   runLLM backend request = do

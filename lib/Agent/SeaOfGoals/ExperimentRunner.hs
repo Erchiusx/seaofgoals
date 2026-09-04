@@ -42,6 +42,7 @@ import Agent.SeaOfGoals.Harness
   )
 import Agent.SeaOfGoals.LLM
   ( LLMContentPart (TextPart)
+  , LLMInputItem
   , LLMRequest (..)
   , ResponseFormat (PlainText)
   , ToolCall (..)
@@ -49,7 +50,7 @@ import Agent.SeaOfGoals.LLM
   )
 import Agent.SeaOfGoals.LLM.Backends.GPT
   ( GPTBackend (..)
-  , defaultGPTEndpoint
+  , loadGPTEndpointFromEnv
   )
 import Agent.SeaOfGoals.Scheduling.Agentic
   ( AgentRunResult (..)
@@ -294,15 +295,19 @@ loadExperimentContext apiKey prompt = do
   goalContextPreloadPlan <- loadGoalContextPreloadPlanFromEnv
   dynamicGoalContextPreloadPlan <- newIORef (GoalContextPreloadPlan Map.empty)
   createDirectoryIfMissing True controlRoot
-  tools <- loadExperimentToolsWithControlRoot controlRoot
+  tools <-
+    loadExperimentToolsWithControlRoot
+      controlRoot
+      dynamicGoalContextPreloadPlan
   skillContext <- loadSkillContextFromEnv
   createDirectoryIfMissing True (takeDirectory tracePath)
   traceLock <- newMVar ()
+  endpoint <- loadGPTEndpointFromEnv
   let
     backend =
       GPTBackend
         { gptApiKey = apiKey
-        , gptEndpoint = defaultGPTEndpoint
+        , gptEndpoint = endpoint
         }
     requestTemplate =
       LLMRequest
@@ -359,6 +364,7 @@ runSinglePrompt context = do
             , harnessRequestTemplate = experimentRequestTemplate context
             , harnessSystemPrompt = experimentSystemPromptText context
             , harnessUserPrompt = experimentUserPromptText context
+            , harnessInitialHistorySuffix = []
             , harnessTools = experimentToolsForRun context
             , harnessMaxTurns = 64
             , harnessEventSink = experimentEventSink context
@@ -366,12 +372,14 @@ runSinglePrompt context = do
             }
     CodexAgentRunner -> do
       workspaceRoot <- normalise <$> getCurrentDirectory
-      (promptWithPreload, _) <-
-        enrichGoalPromptForWorkspace
+      preloaded <-
+        preloadGoalContextForWorkspace
           context
           Nothing
           workspaceRoot
           (experimentUserPromptText context)
+      let promptWithPreload =
+            preloadTextPrompt preloaded (experimentUserPromptText context)
       result <-
         runCodexProcessWithControlRoot
           (experimentCodexProcessConfig context)
@@ -547,6 +555,7 @@ runSerialGoal context goalGraph summaries histories node = do
   let prompt =
         serialGoalPrompt
           (experimentUserPromptText context)
+          goalGraph
           predecessorSummaries
           predecessorHistories
           node
@@ -564,8 +573,8 @@ runSerialHarnessGoal
   -> IO (Either Text AgentRunResult)
 runSerialHarnessGoal context summaries node prompt = do
   workspaceRoot <- normalise <$> getCurrentDirectory
-  (promptWithPreload, preloadedReads) <-
-    enrichGoalPromptForWorkspace
+  preloaded <-
+    preloadGoalContextForWorkspace
       context
       (Just (goalNodeId node))
       workspaceRoot
@@ -576,7 +585,8 @@ runSerialHarnessGoal context summaries node prompt = do
         { harnessProvider = experimentBackend context
         , harnessRequestTemplate = experimentRequestTemplate context
         , harnessSystemPrompt = experimentSystemPromptText context
-        , harnessUserPrompt = promptWithPreload
+        , harnessUserPrompt = prompt
+        , harnessInitialHistorySuffix = preloadedGoalContextHistory preloaded
         , harnessTools = experimentToolsForRun context
         , harnessMaxTurns = 32
         , harnessEventSink = experimentEventSink context
@@ -590,7 +600,7 @@ runSerialHarnessGoal context summaries node prompt = do
         { agentRunResultGoal = goalNodeId node
         , agentRunResultStatus = status
         , agentRunResultSummaryForDependents = summary
-        , agentRunResultReads = preloadedReads
+        , agentRunResultReads = preloadedGoalContextReads preloaded
         , agentRunResultWrites = Set.empty
         , agentRunResultSnapshot = SnapshotId (unGoalNodeId (goalNodeId node))
         }
@@ -630,12 +640,13 @@ runSerialCodexGoal context summaries histories node prompt = do
         </> "control"
   resetDirectory beforeWorkspace
   copyWorkspaceTree workspaceRoot beforeWorkspace
-  (promptWithPreload, preloadedReads) <-
-    enrichGoalPromptForWorkspace
+  preloaded <-
+    preloadGoalContextForWorkspace
       context
       (Just (goalNodeId node))
       workspaceRoot
       prompt
+  let promptWithPreload = preloadTextPrompt preloaded prompt
   codexResult <-
     runCodexGoalProcessWithControlRoot
       context
@@ -652,7 +663,7 @@ runSerialCodexGoal context summaries histories node prompt = do
         { agentRunResultGoal = goalNodeId node
         , agentRunResultStatus = status
         , agentRunResultSummaryForDependents = summary
-        , agentRunResultReads = preloadedReads
+        , agentRunResultReads = preloadedGoalContextReads preloaded
         , agentRunResultWrites = Set.fromList changedPaths
         , agentRunResultSnapshot = SnapshotId (unGoalNodeId (goalNodeId node))
         }
@@ -717,13 +728,13 @@ codexPrompt context prompt =
     , "When the task is finished, reply with a concise summary for dependent goals."
     ]
 
-enrichGoalPromptForWorkspace
+preloadGoalContextForWorkspace
   :: ExperimentContext
   -> Maybe GoalNodeId
   -> FilePath
   -> Text
-  -> IO (Text, Set FilePath)
-enrichGoalPromptForWorkspace context maybeGoalId workspaceRoot prompt = do
+  -> IO PreloadedGoalContext
+preloadGoalContextForWorkspace context maybeGoalId workspaceRoot prompt = do
   dynamicPlan <- readIORef (experimentDynamicGoalContextPreloadPlan context)
   let
     GoalContextPreloadPlan plan =
@@ -732,18 +743,17 @@ enrichGoalPromptForWorkspace context maybeGoalId workspaceRoot prompt = do
         dynamicPlan
     plannedFiles =
       maybeGoalId >>= \goalId -> Map.lookup (unGoalNodeId goalId) plan
-  preloaded <-
-    preloadGoalContextWithPlanDetailed
-      (experimentGoalContextPreloadConfig context)
-      plannedFiles
-      workspaceRoot
-      prompt
-  pure
-    ( Text.intercalate
-        "\n\n"
-        (filter (not . Text.null) [preloadedGoalContextText preloaded, prompt])
-    , preloadedGoalContextReads preloaded
-    )
+  preloadGoalContextWithPlanDetailed
+    (experimentGoalContextPreloadConfig context)
+    plannedFiles
+    workspaceRoot
+    prompt
+
+preloadTextPrompt :: PreloadedGoalContext -> Text -> Text
+preloadTextPrompt preloaded prompt =
+  Text.intercalate
+    "\n\n"
+    (filter (not . Text.null) [preloadedGoalContextText preloaded, prompt])
 
 recordDynamicPreloadPlanFromControlRoot
   :: ExperimentContext -> FilePath -> IO ()
@@ -841,6 +851,7 @@ runConcurrentGoal
     let prompt =
           serialGoalPrompt
             (experimentUserPromptText context)
+            goalGraph
             predecessorSummaries
             predecessorHistories
             node
@@ -849,13 +860,14 @@ runConcurrentGoal
         resetDirectory runRoot
         copyWorkspaceTree baseWorkspace ancestorWorkspace
         copyWorkspaceTree ancestorWorkspace taskWorkspace
-        tools <- experimentToolsForWorkspace taskWorkspace
-        (promptWithPreload, preloadedReads) <-
-          enrichGoalPromptForWorkspace
+        tools <- experimentToolsForWorkspace context taskWorkspace
+        preloaded <-
+          preloadGoalContextForWorkspace
             context
             (Just (goalNodeId node))
             taskWorkspace
             prompt
+        let promptWithPreload = preloadTextPrompt preloaded prompt
         case experimentAgentRunner context of
           HarnessAgentRunner ->
             runConcurrentHarnessGoal
@@ -864,8 +876,9 @@ runConcurrentGoal
               taskWorkspace
               tools
               node
-              promptWithPreload
-              preloadedReads
+              prompt
+              (preloadedGoalContextHistory preloaded)
+              (preloadedGoalContextReads preloaded)
           CodexAgentRunner ->
             runConcurrentCodexGoal
               context
@@ -875,7 +888,7 @@ runConcurrentGoal
               taskWorkspace
               node
               promptWithPreload
-              preloadedReads
+              (preloadedGoalContextReads preloaded)
       FuseEventWorkspace -> do
         case experimentAgentRunner context of
           HarnessAgentRunner ->
@@ -899,9 +912,10 @@ runConcurrentHarnessGoal
   -> [ToolSpec]
   -> GoalNode
   -> Text
+  -> [LLMInputItem]
   -> Set FilePath
   -> IO (Either Text AgentRunResult)
-runConcurrentHarnessGoal context ancestorWorkspace taskWorkspace tools node prompt preloadedReads = do
+runConcurrentHarnessGoal context ancestorWorkspace taskWorkspace tools node prompt preloadHistory preloadedReads = do
   state <-
     runHarness
       HarnessConfig
@@ -909,6 +923,7 @@ runConcurrentHarnessGoal context ancestorWorkspace taskWorkspace tools node prom
         , harnessRequestTemplate = experimentRequestTemplate context
         , harnessSystemPrompt = experimentSystemPromptText context
         , harnessUserPrompt = prompt
+        , harnessInitialHistorySuffix = preloadHistory
         , harnessTools = tools
         , harnessMaxTurns = 32
         , harnessEventSink = experimentEventSink context
@@ -1022,12 +1037,13 @@ runConcurrentCodexGoalWithFuse context pendingHistories baseWorkspace runRoot no
       (mountFuseWorkspace handle mountValue)
       unmountFuseWorkspace
       ( \_ -> do
-          (promptWithPreload, preloadedReads) <-
-            enrichGoalPromptForWorkspace
+          preloaded <-
+            preloadGoalContextForWorkspace
               context
               (Just (goalNodeId node))
               baseWorkspace
               prompt
+          let promptWithPreload = preloadTextPrompt preloaded prompt
           runCodexGoalProcessWithControlRoot
             context
             (WorkspaceBackend.mountHostPath mountValue)
@@ -1044,7 +1060,10 @@ runConcurrentCodexGoalWithFuse context pendingHistories baseWorkspace runRoot no
         { agentRunResultGoal = goalNodeId node
         , agentRunResultStatus = status
         , agentRunResultSummaryForDependents = summary
-        , agentRunResultReads = Set.union preloadedReads (FuseStore.readSet accessLog)
+        , agentRunResultReads =
+            Set.union
+              (preloadedGoalContextReads preloaded)
+              (FuseStore.readSet accessLog)
         , agentRunResultWrites = FuseStore.writeSet accessLog
         , agentRunResultSnapshot =
             SnapshotId
@@ -1492,13 +1511,19 @@ lockedAppendEvent lock path event =
     pure ()
 
 serialGoalPrompt
-  :: Text -> [(GoalNodeId, Text)] -> [(GoalNodeId, Text)] -> GoalNode -> Text
-serialGoalPrompt originalPrompt predecessorSummaries predecessorHistories node =
+  :: Text
+  -> GoalGraph
+  -> [(GoalNodeId, Text)]
+  -> [(GoalNodeId, Text)]
+  -> GoalNode
+  -> Text
+serialGoalPrompt originalPrompt goalGraph predecessorSummaries predecessorHistories node =
   Text.intercalate
     "\n\n"
     ( filter
         (not . Text.null)
         [ "Original task:\n" <> originalPrompt
+        , renderCompiledGoalGraphForPrompt goalGraph node
         , renderedSummaries
         , renderedHistories
         , Text.unlines
@@ -1512,6 +1537,7 @@ serialGoalPrompt originalPrompt predecessorSummaries predecessorHistories node =
             , "If a dependency service is already available through an environment variable, use that value instead of recreating the service or assuming host ports from the original skill text."
             , "Do not call docker unless this goal explicitly requires Docker and the docker command is available."
             , "Do not read harness trajectory files such as sog-trace.jsonl; they are private experiment records, not task inputs."
+            , "If this goal plans preloaded context, call set_preload_plan exactly once. Every key in that plan must be one of the compiled goal ids listed above, and each key must describe files useful for that exact goal."
             , ""
             , "Before doing work, call begin_subgoal with this exact goal id."
             , "When this goal is complete, call end_subgoal with this exact goal id and a concise summary."
@@ -1543,6 +1569,43 @@ serialGoalPrompt originalPrompt predecessorSummaries predecessorHistories node =
       , history
       , "END CODEX HISTORY " <> unGoalNodeId goalId
       ]
+
+renderCompiledGoalGraphForPrompt :: GoalGraph -> GoalNode -> Text
+renderCompiledGoalGraphForPrompt graph currentNode =
+  Text.unlines
+    ( [ "Compiled goal graph:"
+      , graphInstruction
+      ]
+        <> fmap renderNode orderedNodes
+    )
+ where
+  currentIsPlanner =
+    unGoalNodeId (goalNodeId currentNode) == "G000"
+  graphInstruction
+    | currentIsPlanner =
+        "Use these exact goal ids, names, descriptions, prompts, and predecessor edges when planning preloaded context for this run."
+    | otherwise =
+        "Use these exact goal ids, names, and predecessor edges to stay inside the current goal boundary."
+  orderedNodes =
+    sortOn goalNodeSerialIndex (Map.elems (goalGraphNodes graph))
+  predecessorIds goalId =
+    [ fromId
+    | (fromId, toId) <- Set.toList (goalGraphEdges graph)
+    , toId == goalId
+    ]
+  renderNode goal =
+    Text.unlines
+      ( [ "- id: " <> unGoalNodeId (goalNodeId goal)
+        , "  name: " <> goalNodeName goal
+        , "  predecessors: " <> renderGoalIds (predecessorIds (goalNodeId goal))
+        ]
+          <> [ "  goal prompt: " <> goalNodePrompt goal
+             | currentIsPlanner
+             ]
+      )
+  renderGoalIds [] = "[]"
+  renderGoalIds goalIds =
+    "[" <> Text.intercalate ", " (fmap unGoalNodeId goalIds) <> "]"
 
 serialGoalStatus :: GoalNode -> HarnessState -> Text
 serialGoalStatus node state
@@ -1706,20 +1769,22 @@ experimentToolsWithShell shellToolSpec =
   , shellToolSpec
   ]
 
-loadExperimentToolsWithControlRoot :: FilePath -> IO [ToolSpec]
-loadExperimentToolsWithControlRoot controlRoot = do
+loadExperimentToolsWithControlRoot
+  :: FilePath -> IORef GoalContextPreloadPlan -> IO [ToolSpec]
+loadExperimentToolsWithControlRoot controlRoot dynamicPlan = do
   workspaceRoot <- normalise <$> getCurrentDirectory
-  experimentToolsForWorkspaceWithControlRoot workspaceRoot controlRoot
+  experimentToolsForWorkspaceWithControlRoot workspaceRoot controlRoot dynamicPlan
 
-experimentToolsForWorkspace :: FilePath -> IO [ToolSpec]
-experimentToolsForWorkspace workspaceRoot =
+experimentToolsForWorkspace :: ExperimentContext -> FilePath -> IO [ToolSpec]
+experimentToolsForWorkspace context workspaceRoot =
   experimentToolsForWorkspaceWithControlRoot
     workspaceRoot
     (workspaceRoot <> ".sog")
+    (experimentDynamicGoalContextPreloadPlan context)
 
 experimentToolsForWorkspaceWithControlRoot
-  :: FilePath -> FilePath -> IO [ToolSpec]
-experimentToolsForWorkspaceWithControlRoot workspaceRoot controlRoot = do
+  :: FilePath -> FilePath -> IORef GoalContextPreloadPlan -> IO [ToolSpec]
+experimentToolsForWorkspaceWithControlRoot workspaceRoot controlRoot dynamicPlan = do
   maybeSandbox <- lookupEnv "SOG_SANDBOX"
   maybeBwrap <- lookupEnv "SOG_BWRAP"
   case (maybeSandbox, maybeBwrap) of
@@ -1727,15 +1792,21 @@ experimentToolsForWorkspaceWithControlRoot workspaceRoot controlRoot = do
       loadBwrapExperimentToolsAt
         workspaceRoot
         controlRoot
+        dynamicPlan
         (fromMaybe "bwrap" maybeBwrap)
     (_, Just binary)
       | not (null binary) ->
-          loadBwrapExperimentToolsAt workspaceRoot controlRoot binary
+          loadBwrapExperimentToolsAt workspaceRoot controlRoot dynamicPlan binary
     _ ->
-      pure (experimentToolsForPath workspaceRoot)
+      pure (experimentToolsForPath workspaceRoot dynamicPlan)
 
-loadBwrapExperimentToolsAt :: FilePath -> FilePath -> FilePath -> IO [ToolSpec]
-loadBwrapExperimentToolsAt workspaceRoot controlRoot binary = do
+loadBwrapExperimentToolsAt
+  :: FilePath
+  -> FilePath
+  -> IORef GoalContextPreloadPlan
+  -> FilePath
+  -> IO [ToolSpec]
+loadBwrapExperimentToolsAt workspaceRoot controlRoot dynamicPlan binary = do
   let normalWorkspaceRoot = normalise workspaceRoot
   let
     bwrapRoot = normalise controlRoot </> "bwrap"
@@ -1764,6 +1835,7 @@ loadBwrapExperimentToolsAt workspaceRoot controlRoot binary = do
     [ beginSubgoalTool
     , endSubgoalTool
     , recordEffectTool
+    , setPreloadPlanTool dynamicPlan
     , writeFileToolAt normalWorkspaceRoot
     , bwrapShellTool
         BwrapToolBinding
@@ -1772,11 +1844,12 @@ loadBwrapExperimentToolsAt workspaceRoot controlRoot binary = do
           }
     ]
 
-experimentToolsForPath :: FilePath -> [ToolSpec]
-experimentToolsForPath workspaceRoot =
+experimentToolsForPath :: FilePath -> IORef GoalContextPreloadPlan -> [ToolSpec]
+experimentToolsForPath workspaceRoot dynamicPlan =
   [ beginSubgoalTool
   , endSubgoalTool
   , recordEffectTool
+  , setPreloadPlanTool dynamicPlan
   , writeFileToolAt workspaceRoot
   , shellToolAt workspaceRoot
   ]
@@ -1860,6 +1933,49 @@ recordEffectTool =
                   }
               ]
             )
+
+setPreloadPlanTool :: IORef GoalContextPreloadPlan -> ToolSpec
+setPreloadPlanTool dynamicPlan =
+  objectToolSpec
+    "set_preload_plan"
+    "Submit a JSON preload plan for later goals to the harness. This records control data only and does not write workspace files."
+    [
+      ( "plan_json"
+      , textSchema
+          "JSON object with shape {\"goals\":{\"G001\":[\"relative/path/from/workspace\"]}}"
+      )
+    ]
+    ["plan_json"]
+    $ \toolCall ->
+      case parseArgs toolCall of
+        Left err -> pure (textResult toolCall err, [])
+        Right args ->
+          case eitherDecode
+            (LazyByteString.fromStrict (TextEncoding.encodeUtf8 (preloadPlanJson args))) of
+            Left err ->
+              pure (textResult toolCall ("invalid preload plan JSON: " <> Text.pack err), [])
+            Right plan@(GoalContextPreloadPlan goals) -> do
+              modifyIORef'
+                dynamicPlan
+                (`mergeGoalContextPreloadPlans` plan)
+              pure
+                ( textResult toolCall "preload plan recorded"
+                ,
+                  [ EffectRecorded
+                      { eventEffect =
+                          EffectRecord
+                            { effectKind = "preload_plan"
+                            , effectResource = "dynamic"
+                            , effectDetail =
+                                Just
+                                  ( "goals="
+                                      <> Text.intercalate "," (Map.keys goals)
+                                  )
+                            }
+                      , eventActiveSubgoal = Nothing
+                      }
+                  ]
+                )
 
 writeFileTool :: ToolSpec
 writeFileTool =
@@ -2022,6 +2138,15 @@ data BeginSubgoalArgs = BeginSubgoalArgs
   { beginId :: Text
   , beginName :: Text
   }
+
+newtype SetPreloadPlanArgs = SetPreloadPlanArgs
+  { preloadPlanJson :: Text
+  }
+
+instance FromJSON SetPreloadPlanArgs where
+  parseJSON =
+    withObject "SetPreloadPlanArgs" $ \value ->
+      SetPreloadPlanArgs <$> value .: "plan_json"
 
 instance FromJSON BeginSubgoalArgs where
   parseJSON =

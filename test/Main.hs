@@ -38,6 +38,7 @@ import Agent.SeaOfGoals.LLM
   ( LLM (..)
   , LLMContentPart (TextPart)
   , LLMError (LLMProviderError)
+  , LLMInputItem (ToolCallInput, ToolResultInput)
   , LLMMessage (..)
   , LLMRequest (..)
   , LLMResponse (..)
@@ -45,6 +46,10 @@ import Agent.SeaOfGoals.LLM
   , ResponseFormat (PlainText)
   , ToolCall (..)
   , ToolResult (..)
+  )
+import Agent.SeaOfGoals.LLM.Backends.GPT
+  ( defaultGPTEndpoint
+  , loadGPTEndpointFromEnv
   )
 import Agent.SeaOfGoals.Scheduling.Agentic
   ( AgentRunResult (..)
@@ -173,6 +178,7 @@ import Data.Aeson
 import Data.ByteString qualified as ByteString
 import Data.IORef
   ( IORef
+  , atomicModifyIORef'
   , modifyIORef'
   , newIORef
   , readIORef
@@ -190,12 +196,18 @@ import System.Directory
   , getTemporaryDirectory
   , removePathForcibly
   )
+import System.Environment
+  ( lookupEnv
+  , setEnv
+  , unsetEnv
+  )
 import System.Exit (exitFailure)
 import System.FilePath ((</>))
 
 main :: IO ()
 main = do
   unicodeTransportResponseBodyTest
+  gptEndpointEnvTest
   configFileTest
   compilerGraphValidationTest
   compilerPreloadPlannerPromptTest
@@ -225,6 +237,7 @@ main = do
         , harnessRequestTemplate = requestTemplate
         , harnessSystemPrompt = "Use tools."
         , harnessUserPrompt = "Run a tiny tool-call loop."
+        , harnessInitialHistorySuffix = []
         , harnessTools = testTools
         , harnessMaxTurns = 8
         , harnessEventSink = \event -> modifyIORef' eventsRef (event :)
@@ -272,6 +285,28 @@ unicodeTransportResponseBodyTest = do
     "transport response body keeps UTF-8 JSON bytes"
     (Right payload)
     (eitherDecode (transportResponseBody response) :: Either String Value)
+
+gptEndpointEnvTest :: IO ()
+gptEndpointEnvTest =
+  withEnvVar "OPENAI_CHAT_COMPLETIONS_URL" Nothing $
+    withEnvVar "OPENAI_BASE_URL" Nothing $ do
+      defaultEndpoint <- loadGPTEndpointFromEnv
+      assertEqual "default GPT endpoint" defaultGPTEndpoint defaultEndpoint
+      withEnvVar "OPENAI_BASE_URL" (Just "https://risellm.snakin.top/v1") $ do
+        riseEndpoint <- loadGPTEndpointFromEnv
+        assertEqual
+          "OPENAI_BASE_URL is expanded to chat completions endpoint"
+          "https://risellm.snakin.top/v1/chat/completions"
+          riseEndpoint
+      withEnvVar
+        "OPENAI_CHAT_COMPLETIONS_URL"
+        (Just "https://example.test/custom/chat")
+        $ do
+          explicitEndpoint <- loadGPTEndpointFromEnv
+          assertEqual
+            "explicit chat completions URL wins"
+            "https://example.test/custom/chat"
+            explicitEndpoint
 
 configFileTest :: IO ()
 configFileTest = do
@@ -337,8 +372,8 @@ compilerPreloadPlannerPromptTest = do
     "compiler preload planner prompt inserts G000"
     ("id G000" `Text.isInfixOf` prompt)
   assertBool
-    "compiler preload planner prompt names control plan path"
-    ("/sog-control/preload-plan.json" `Text.isInfixOf` prompt)
+    "compiler preload planner prompt names preload plan tool"
+    ("set_preload_plan" `Text.isInfixOf` prompt)
 
 goalContextPreloadTest :: IO ()
 goalContextPreloadTest = do
@@ -389,6 +424,12 @@ goalContextPreloadTest = do
     "preload records selected files as reads"
     (Set.fromList ["src/ColorMenu.tsx"])
     (preloadedGoalContextReads preloaded)
+  assertBool
+    "preload synthetic history includes tool call"
+    (any isPreloadToolCall (preloadedGoalContextHistory preloaded))
+  assertBool
+    "preload synthetic history includes tool result"
+    (any isPreloadToolResult (preloadedGoalContextHistory preloaded))
   plannedRendered <-
     preloadedGoalContextText
       <$> preloadGoalContextWithPlanDetailed
@@ -1343,9 +1384,13 @@ concurrentChaseSchedulerTest = do
         , concurrentChaseMaxReplans =
             concurrentChaseConfigMaxReplans chaseConfig
         , concurrentChaseRunGoal = \node -> do
-            modifyIORef'
+            atomicModifyIORef'
               runCountsRef
-              (Map.insertWith (+) (goalNodeId node) (1 :: Int))
+              ( \counts ->
+                  ( Map.insertWith (+) (goalNodeId node) (1 :: Int) counts
+                  , ()
+                  )
+              )
             pure (Right (fakeAgentRunResult node))
         , concurrentChaseMergeGoal = \result -> do
             merged <- readIORef mergedRef
@@ -1878,6 +1923,14 @@ isHarnessFinished :: HarnessEvent -> Bool
 isHarnessFinished HarnessFinished{} = True
 isHarnessFinished _ = False
 
+isPreloadToolCall :: LLMInputItem -> Bool
+isPreloadToolCall (ToolCallInput _) = True
+isPreloadToolCall _ = False
+
+isPreloadToolResult :: LLMInputItem -> Bool
+isPreloadToolResult (ToolResultInput _) = True
+isPreloadToolResult _ = False
+
 assertEqual :: (Eq value, Show value) => String -> value -> value -> IO ()
 assertEqual label expected actual =
   assertBool
@@ -1893,3 +1946,14 @@ assertBool label False = do
 hasSubsequence :: Eq value => [value] -> [value] -> Bool
 hasSubsequence needle haystack =
   any (needle `List.isPrefixOf`) (List.tails haystack)
+
+withEnvVar :: String -> Maybe String -> IO a -> IO a
+withEnvVar name value action = do
+  oldValue <- lookupEnv name
+  setMaybe value
+  result <- action
+  setMaybe oldValue
+  pure result
+ where
+  setMaybe Nothing = unsetEnv name
+  setMaybe (Just newValue) = setEnv name newValue

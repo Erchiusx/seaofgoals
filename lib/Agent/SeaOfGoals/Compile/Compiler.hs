@@ -28,7 +28,7 @@ import Agent.SeaOfGoals.LLM
 import Agent.SeaOfGoals.LLM qualified as LLM
 import Agent.SeaOfGoals.LLM.Backends.GPT
   ( GPTBackend (..)
-  , defaultGPTEndpoint
+  , loadGPTEndpointFromEnv
   )
 import Data.Aeson
   ( FromJSON (..)
@@ -123,6 +123,7 @@ runCompiler skillPath outputPath maybeSkillName = do
   apiKey <- lookupEnv "OPENAI_API_KEY"
   skillText <- TextIO.readFile skillPath
   model <- Text.pack . fromMaybe "gpt-5.5" <$> lookupEnv "SOG_MODEL"
+  endpoint <- loadGPTEndpointFromEnv
   insertPreloadPlanner <- loadCompilerPreloadPlanner
   let skillName = fromMaybe "skill" maybeSkillName
   result <-
@@ -138,7 +139,7 @@ runCompiler skillPath outputPath maybeSkillName = do
             let backend =
                   GPTBackend
                     { gptApiKey = key
-                    , gptEndpoint = defaultGPTEndpoint
+                    , gptEndpoint = endpoint
                     }
             compileSkill backend model skillName skillText
   case result of
@@ -460,7 +461,7 @@ compilerPreloadPlannerInstructions insertPreloadPlanner
         , "Preload planning mode is enabled."
         , "Insert a first goal with id G000 and name `Explore workspace and plan goal context`."
         , "G000 must be read-only with respect to /workspace. It may inspect directories and read files, but must not modify workspace files."
-        , "G000 must write exactly one JSON preload plan to /sog-control/preload-plan.json."
+        , "G000 must call set_preload_plan exactly once with the JSON preload plan before ending the goal."
         , "The preload plan must have this shape: {\"goals\":{\"G001\":[\"relative/path/from/workspace\"]}}."
         , "The plan should map later goal ids to existing text source files that provide useful initial context for that goal."
         , "Do not include dependency directories, build outputs, caches, generated bundles, or SeaOfGoals control files."

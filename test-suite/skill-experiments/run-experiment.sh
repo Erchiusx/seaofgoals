@@ -64,6 +64,11 @@ else
   export SOG_CONFIG="${SOG_CONFIG:-$SOG_CONFIG_FILE}"
 fi
 
+if [ -z "${OPENAI_API_KEY:-}" ] && [ -f "$HOME/.secrets/rise" ]; then
+  # shellcheck disable=SC1090
+  source "$HOME/.secrets/rise"
+fi
+
 if [ -z "${OPENAI_API_KEY:-}" ] && [ -f "$HOME/.secrets/openai" ]; then
   # shellcheck disable=SC1090
   source "$HOME/.secrets/openai"
