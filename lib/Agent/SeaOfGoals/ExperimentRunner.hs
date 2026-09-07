@@ -211,6 +211,7 @@ data ExperimentContext = ExperimentContext
   , experimentGoalContextPreloadConfig :: GoalContextPreloadConfig
   , experimentGoalContextPreloadPlan :: GoalContextPreloadPlan
   , experimentDynamicGoalContextPreloadPlan :: IORef GoalContextPreloadPlan
+  , experimentHarnessLifecycle :: Bool
   }
 
 data AgentRunnerMode
@@ -293,12 +294,14 @@ loadExperimentContext apiKey prompt = do
   concurrentWorkspaceMode <- loadConcurrentWorkspaceMode
   goalContextPreloadConfig <- loadGoalContextPreloadConfigFromEnv
   goalContextPreloadPlan <- loadGoalContextPreloadPlanFromEnv
+  harnessLifecycle <- loadHarnessLifecycleMode
   dynamicGoalContextPreloadPlan <- newIORef (GoalContextPreloadPlan Map.empty)
   createDirectoryIfMissing True controlRoot
   tools <-
     loadExperimentToolsWithControlRoot
       controlRoot
       dynamicGoalContextPreloadPlan
+      harnessLifecycle
   skillContext <- loadSkillContextFromEnv
   createDirectoryIfMissing True (takeDirectory tracePath)
   traceLock <- newMVar ()
@@ -324,10 +327,14 @@ loadExperimentContext apiKey prompt = do
         , requestConfig = Nothing
         }
     workflowPrompt = maybe "" renderWorkflowPrompt workflowSpec
+    baseSystemPrompt =
+      if harnessLifecycle
+        then experimentSystemPrompt
+        else experimentSystemPromptNoLifecycle
     systemPrompt =
       Text.intercalate
         "\n\n"
-        (filter (not . Text.null) [experimentSystemPrompt, skillContext, workflowPrompt])
+        (filter (not . Text.null) [baseSystemPrompt, skillContext, workflowPrompt])
   pure
     ExperimentContext
       { experimentBackend = backend
@@ -347,6 +354,7 @@ loadExperimentContext apiKey prompt = do
       , experimentGoalContextPreloadConfig = goalContextPreloadConfig
       , experimentGoalContextPreloadPlan = goalContextPreloadPlan
       , experimentDynamicGoalContextPreloadPlan = dynamicGoalContextPreloadPlan
+      , experimentHarnessLifecycle = harnessLifecycle
       }
 
 defaultExperimentControlRoot :: FilePath -> FilePath
@@ -1721,6 +1729,18 @@ loadConcurrentWorkspaceMode = do
     Just "fuse" -> pure FuseEventWorkspace
     Just other -> fail ("unknown SOG_CONCURRENT_WORKSPACE: " <> Text.unpack other)
 
+loadHarnessLifecycleMode :: IO Bool
+loadHarnessLifecycleMode = do
+  maybeValue <- lookupEnv "SOG_HARNESS_LIFECYCLE"
+  pure
+    ( case fmap Text.toLower (Text.pack <$> maybeValue) of
+        Just "0" -> False
+        Just "false" -> False
+        Just "no" -> False
+        Just "off" -> False
+        _ -> True
+    )
+
 loadWorkflowSpecFromEnv :: IO (Maybe WorkflowSpec)
 loadWorkflowSpecFromEnv = do
   maybePath <- lookupEnv "SOG_WORKFLOW_SPEC"
@@ -1756,6 +1776,10 @@ experimentSystemPrompt :: Text
 experimentSystemPrompt =
   $(embedTextFile "lib/Agent/SeaOfGoals/Prompts/experiment-system.txt")
 
+experimentSystemPromptNoLifecycle :: Text
+experimentSystemPromptNoLifecycle =
+  $(embedTextFile "lib/Agent/SeaOfGoals/Prompts/experiment-system-no-lifecycle.txt")
+
 experimentTools :: [ToolSpec]
 experimentTools =
   experimentToolsWithShell shellTool
@@ -1770,10 +1794,14 @@ experimentToolsWithShell shellToolSpec =
   ]
 
 loadExperimentToolsWithControlRoot
-  :: FilePath -> IORef GoalContextPreloadPlan -> IO [ToolSpec]
-loadExperimentToolsWithControlRoot controlRoot dynamicPlan = do
+  :: FilePath -> IORef GoalContextPreloadPlan -> Bool -> IO [ToolSpec]
+loadExperimentToolsWithControlRoot controlRoot dynamicPlan harnessLifecycle = do
   workspaceRoot <- normalise <$> getCurrentDirectory
-  experimentToolsForWorkspaceWithControlRoot workspaceRoot controlRoot dynamicPlan
+  experimentToolsForWorkspaceWithControlRoot
+    workspaceRoot
+    controlRoot
+    dynamicPlan
+    harnessLifecycle
 
 experimentToolsForWorkspace :: ExperimentContext -> FilePath -> IO [ToolSpec]
 experimentToolsForWorkspace context workspaceRoot =
@@ -1781,10 +1809,11 @@ experimentToolsForWorkspace context workspaceRoot =
     workspaceRoot
     (workspaceRoot <> ".sog")
     (experimentDynamicGoalContextPreloadPlan context)
+    (experimentHarnessLifecycle context)
 
 experimentToolsForWorkspaceWithControlRoot
-  :: FilePath -> FilePath -> IORef GoalContextPreloadPlan -> IO [ToolSpec]
-experimentToolsForWorkspaceWithControlRoot workspaceRoot controlRoot dynamicPlan = do
+  :: FilePath -> FilePath -> IORef GoalContextPreloadPlan -> Bool -> IO [ToolSpec]
+experimentToolsForWorkspaceWithControlRoot workspaceRoot controlRoot dynamicPlan harnessLifecycle = do
   maybeSandbox <- lookupEnv "SOG_SANDBOX"
   maybeBwrap <- lookupEnv "SOG_BWRAP"
   case (maybeSandbox, maybeBwrap) of
@@ -1793,20 +1822,32 @@ experimentToolsForWorkspaceWithControlRoot workspaceRoot controlRoot dynamicPlan
         workspaceRoot
         controlRoot
         dynamicPlan
+        harnessLifecycle
         (fromMaybe "bwrap" maybeBwrap)
     (_, Just binary)
       | not (null binary) ->
-          loadBwrapExperimentToolsAt workspaceRoot controlRoot dynamicPlan binary
+          loadBwrapExperimentToolsAt
+            workspaceRoot
+            controlRoot
+            dynamicPlan
+            harnessLifecycle
+            binary
     _ ->
-      pure (experimentToolsForPath workspaceRoot dynamicPlan)
+      pure
+        ( experimentToolsForPathWithLifecycle
+            workspaceRoot
+            dynamicPlan
+            harnessLifecycle
+        )
 
 loadBwrapExperimentToolsAt
   :: FilePath
   -> FilePath
   -> IORef GoalContextPreloadPlan
+  -> Bool
   -> FilePath
   -> IO [ToolSpec]
-loadBwrapExperimentToolsAt workspaceRoot controlRoot dynamicPlan binary = do
+loadBwrapExperimentToolsAt workspaceRoot controlRoot dynamicPlan harnessLifecycle binary = do
   let normalWorkspaceRoot = normalise workspaceRoot
   let
     bwrapRoot = normalise controlRoot </> "bwrap"
@@ -1832,26 +1873,32 @@ loadBwrapExperimentToolsAt workspaceRoot controlRoot dynamicPlan binary = do
         , bwrapSandboxView = view
         }
   pure
-    [ beginSubgoalTool
-    , endSubgoalTool
-    , recordEffectTool
-    , setPreloadPlanTool dynamicPlan
-    , writeFileToolAt normalWorkspaceRoot
-    , bwrapShellTool
-        BwrapToolBinding
-          { bwrapToolRunner = runner
-          , bwrapToolHandle = handle
-          }
-    ]
+    ( lifecycleTools harnessLifecycle
+        <> [ setPreloadPlanTool dynamicPlan
+           , writeFileToolAt normalWorkspaceRoot
+           , bwrapShellTool
+               BwrapToolBinding
+                 { bwrapToolRunner = runner
+                 , bwrapToolHandle = handle
+                 }
+           ]
+    )
 
-experimentToolsForPath :: FilePath -> IORef GoalContextPreloadPlan -> [ToolSpec]
-experimentToolsForPath workspaceRoot dynamicPlan =
+experimentToolsForPathWithLifecycle
+  :: FilePath -> IORef GoalContextPreloadPlan -> Bool -> [ToolSpec]
+experimentToolsForPathWithLifecycle workspaceRoot dynamicPlan harnessLifecycle =
+  lifecycleTools harnessLifecycle
+    <> [ setPreloadPlanTool dynamicPlan
+       , writeFileToolAt workspaceRoot
+       , shellToolAt workspaceRoot
+       ]
+
+lifecycleTools :: Bool -> [ToolSpec]
+lifecycleTools False = []
+lifecycleTools True =
   [ beginSubgoalTool
   , endSubgoalTool
   , recordEffectTool
-  , setPreloadPlanTool dynamicPlan
-  , writeFileToolAt workspaceRoot
-  , shellToolAt workspaceRoot
   ]
 
 beginSubgoalTool :: ToolSpec

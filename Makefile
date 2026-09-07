@@ -4,7 +4,7 @@ SKILL_PATH ?=
 COMPILED_GOALS_OUT ?= compiled-goals.json
 SCFG_PYTHON ?= /home/erchius/development/scfg/scfg-package/.venv/bin/python
 
-.PHONY: lint test compile-skill compile-skill-with-preload-planner compile-skill-bootstrap compile-skill-bootstrap-with-preload-planner build-workflows smoke-containerd smoke-bwrap experiment experiment-concurrent experiment-codex experiment-codex-fuse experiment-codex-fuse-preload experiment-no-scfg experiment-nextjs-performance experiment-database-migrations experiment-mysql2postgres experiment-test-with-postgres experiment-docker-development experiments experiments-no-scfg view-trace
+.PHONY: lint test compile-skill compile-skill-with-preload-planner compile-skill-bootstrap compile-skill-bootstrap-with-preload-planner build-workflows smoke-containerd smoke-bwrap experiment experiment-concurrent experiment-codex experiment-codex-fuse experiment-codex-fuse-preload experiment-no-scfg experiment-nextjs-performance experiment-database-migrations experiment-mysql2postgres experiment-test-with-postgres experiment-docker-development experiments experiments-no-scfg view-trace serve-traces
 
 lint:
 	fourmolu --config ./fourmolu.yaml -i lib/ test/ test-suite/agent-runner/ compiler/ compiler-bootstrap/ smoke/ test-fuse/
@@ -91,3 +91,6 @@ experiments-no-scfg:
 view-trace:
 	test -n "$(SKILL_EXPERIMENT)"
 	python3 test-suite/skill-experiments/view-trace.py "$(SKILL_EXPERIMENT)"
+
+serve-traces:
+	python3 test-suite/skill-experiments/serve-traces.py

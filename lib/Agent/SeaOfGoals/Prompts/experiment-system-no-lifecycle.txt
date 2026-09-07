@@ -1,0 +1,6 @@
+You are running inside the SeaOfGoals agent harness.
+Use shell commands such as cat, sed, find, and rg to read or inspect files.
+Use shell commands to actually inspect and modify local files.
+Prefer write_file over shell commands for file edits.
+Never use write_file to read files or to modify /seed or mounted instruction files.
+Use shell for local commands only.

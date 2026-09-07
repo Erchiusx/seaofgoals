@@ -165,6 +165,9 @@ import Agent.SeaOfGoals.Workspace.ToolRunner.Sandboxed
   , commandResponseToToolResult
   , parseCommandToolCall
   )
+import Control.Concurrent
+  ( threadDelay
+  )
 import Data.Aeson
   ( FromJSON (..)
   , Value
@@ -190,6 +193,10 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Data.Time.Clock
+  ( diffUTCTime
+  , getCurrentTime
+  )
 import System.Directory
   ( createDirectoryIfMissing
   , doesFileExist
@@ -269,6 +276,7 @@ main = do
   assertBool "subgoal ended" (any isSubgoalEnded events)
   assertBool "harness finished" (any isHarnessFinished events)
   putStrLn "Harness tool-call loop test passed."
+  harnessParallelToolCallsTest
 
 unicodeTransportResponseBodyTest :: IO ()
 unicodeTransportResponseBodyTest = do
@@ -1559,6 +1567,87 @@ sandboxedToolCallTest = do
             <> show (sandboxedToolRequest parsed)
         )
 
+harnessParallelToolCallsTest :: IO ()
+harnessParallelToolCallsTest = do
+  eventsRef <- newIORef []
+  startedRef <- newIORef []
+  finishedRef <- newIORef []
+  provider <-
+    newFakeProvider
+      [ responseWithToolCall $
+          ToolCall
+            { toolCallId = "call-begin"
+            , toolCallName = "begin_subgoal"
+            , toolCallArguments =
+                object ["id" .= ("S1" :: Text), "name" .= ("tiny step" :: Text)]
+            }
+      , responseWithToolCalls
+          [ ToolCall
+              { toolCallId = "call-slow-a"
+              , toolCallName = "slow"
+              , toolCallArguments = object ["name" .= ("a" :: Text)]
+              }
+          , ToolCall
+              { toolCallId = "call-slow-b"
+              , toolCallName = "slow"
+              , toolCallArguments = object ["name" .= ("b" :: Text)]
+              }
+          ]
+      , responseWithToolCall $
+          ToolCall
+            { toolCallId = "call-end"
+            , toolCallName = "end_subgoal"
+            , toolCallArguments =
+                object ["id" .= ("S1" :: Text), "status" .= ("success" :: Text)]
+            }
+      , LLMResponse
+          { responseModel = "fake-model"
+          , responseMessage = assistantMessage "done"
+          , responseToolCalls = []
+          , responseOutput = []
+          , responseUsage = Nothing
+          , responseFinishReason = Just "stop"
+          }
+      ]
+  before <- getCurrentTime
+  _ <-
+    runHarness
+      HarnessConfig
+        { harnessProvider = provider
+        , harnessRequestTemplate = requestTemplate
+        , harnessSystemPrompt = "Use tools."
+        , harnessUserPrompt = "Run parallel tools."
+        , harnessInitialHistorySuffix = []
+        , harnessTools =
+            [ beginSubgoalTool
+            , slowTool startedRef finishedRef
+            , endSubgoalTool
+            ]
+        , harnessMaxTurns = 8
+        , harnessEventSink = \event -> atomicModifyIORef' eventsRef (\events -> (event : events, ()))
+        , harnessWorkflowSpec = Just testWorkflow
+        }
+  after <- getCurrentTime
+  let elapsed = realToFrac (diffUTCTime after before) :: Double
+  started <- readIORef startedRef
+  finished <- readIORef finishedRef
+  events <- reverse <$> readIORef eventsRef
+  assertBool
+    "two slow tool calls ran in parallel"
+    (elapsed < 0.35)
+  assertEqual
+    "both slow tool calls started"
+    (Set.fromList ["a", "b"])
+    (Set.fromList started)
+  assertEqual
+    "both slow tool calls finished"
+    (Set.fromList ["a", "b"])
+    (Set.fromList finished)
+  assertBool
+    "parallel tool calls keep active subgoal"
+    (all isSlowToolCallForS1 (filter isSlowToolCall events))
+  putStrLn "Harness parallel tool-call test passed."
+
 requestTemplate :: LLMRequest
 requestTemplate =
   LLMRequest
@@ -1720,6 +1809,26 @@ shellTool =
         Right args ->
           pure (toolResult toolCall ("fake shell ran: " <> shellCommand args), [])
 
+slowTool :: IORef [Text] -> IORef [Text] -> ToolSpec
+slowTool startedRef finishedRef =
+  objectToolSpec
+    "slow"
+    "Fake slow tool."
+    [("name", textSchema)]
+    ["name"]
+    $ \toolCall ->
+      case parseArgs toolCall of
+        Left err -> pure (toolResult toolCall err, [])
+        Right args -> do
+          atomicModifyIORef'
+            startedRef
+            (\names -> (slowName args : names, ()))
+          threadDelay 200000
+          atomicModifyIORef'
+            finishedRef
+            (\names -> (slowName args : names, ()))
+          pure (toolResult toolCall ("slow " <> slowName args), [])
+
 endSubgoalTool :: ToolSpec
 endSubgoalTool =
   objectToolSpec
@@ -1788,10 +1897,14 @@ fakeResponses =
 
 responseWithToolCall :: ToolCall -> LLMResponse
 responseWithToolCall toolCall =
+  responseWithToolCalls [toolCall]
+
+responseWithToolCalls :: [ToolCall] -> LLMResponse
+responseWithToolCalls toolCalls =
   LLMResponse
     { responseModel = "fake-model"
     , responseMessage = assistantMessage ""
-    , responseToolCalls = [toolCall]
+    , responseToolCalls = toolCalls
     , responseOutput = []
     , responseUsage = Nothing
     , responseFinishReason = Just "tool_calls"
@@ -1836,6 +1949,15 @@ instance FromJSON ShellArgs where
   parseJSON =
     withObject "ShellArgs" $ \value ->
       ShellArgs <$> value .: "command"
+
+newtype SlowArgs = SlowArgs
+  { slowName :: Text
+  }
+
+instance FromJSON SlowArgs where
+  parseJSON =
+    withObject "SlowArgs" $ \value ->
+      SlowArgs <$> value .: "name"
 
 data EffectArgs = EffectArgs
   { effectKindArg :: Text
@@ -1889,6 +2011,18 @@ isSubgoalEnded _ = False
 isToolCall :: Text -> HarnessEvent -> Bool
 isToolCall name ToolCallObserved{eventToolName = observedName} = name == observedName
 isToolCall _ _ = False
+
+isSlowToolCall :: HarnessEvent -> Bool
+isSlowToolCall ToolCallObserved{eventToolName = "slow"} = True
+isSlowToolCall _ = False
+
+isSlowToolCallForS1 :: HarnessEvent -> Bool
+isSlowToolCallForS1
+  ToolCallObserved
+    { eventToolName = "slow"
+    , eventActiveSubgoal = Just "S1"
+    } = True
+isSlowToolCallForS1 _ = False
 
 isEffectForS1 :: HarnessEvent -> Bool
 isEffectForS1

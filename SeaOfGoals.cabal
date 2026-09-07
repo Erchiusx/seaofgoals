@@ -77,6 +77,7 @@ library
     build-depends:
         aeson,
         aeson-qq,
+        async,
         base ^>=4.21.0.0,
         bytestring,
         case-insensitive,
@@ -161,7 +162,8 @@ executable SeaOfGoals-bwrap-smoke
         directory,
         filepath,
         SeaOfGoals,
-        text
+        text,
+        time
 
 test-suite SeaOfGoals-agent-runner
     import:           warnings
@@ -191,7 +193,8 @@ test-suite SeaOfGoals-test
         directory,
         filepath,
         SeaOfGoals,
-        text
+        text,
+        time
 
 test-suite SeaOfGoals-fuse-test
     import:           warnings

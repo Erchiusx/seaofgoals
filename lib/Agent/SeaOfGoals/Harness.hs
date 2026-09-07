@@ -32,6 +32,9 @@ import Agent.SeaOfGoals.Workflow
   , updateWorkflowStatus
   , workflowStatusEvent
   )
+import Control.Concurrent.Async
+  ( forConcurrently
+  )
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as AesonKey
 import Data.Aeson.KeyMap qualified as AesonKeyMap
@@ -122,67 +125,150 @@ runHarness config = do
         loop (turnsLeft - 1) stateAfterTools
 
   runToolCalls state [] = pure state
-  runToolCalls state (toolCall : rest) = do
-    let effectiveToolCall =
-          canonicalizeWorkflowToolCall (harnessWorkflowSpec config) toolCall
-    harnessEventSink
-      config
-      ToolCallObserved
-        { eventCallId = toolCallId effectiveToolCall
-        , eventToolName = toolCallName effectiveToolCall
-        , eventArguments = toolCallArguments effectiveToolCall
-        , eventActiveSubgoal = harnessActiveSubgoal state
+  runToolCalls state toolCalls =
+    case span (not . isWorkflowBarrierTool) toolCalls of
+      ([], barrier : rest) -> do
+        stateAfterBarrier <- runToolCall state barrier
+        runToolCalls stateAfterBarrier rest
+      (parallelCalls, rest) -> do
+        stateAfterParallel <- runParallelToolCalls state parallelCalls
+        runToolCalls stateAfterParallel rest
+
+  runParallelToolCalls state toolCalls = do
+    let
+      activeSubgoal = harnessActiveSubgoal state
+      effectiveToolCalls =
+        fmap
+          (canonicalizeWorkflowToolCall (harnessWorkflowSpec config))
+          toolCalls
+    mapM_
+      (emitToolCallObserved activeSubgoal)
+      effectiveToolCalls
+    outcomes <-
+      forConcurrently
+        effectiveToolCalls
+        (runEffectiveToolCall activeSubgoal)
+    let
+      eventsWithActiveSubgoal =
+        concatMap toolCallOutcomeEvents outcomes
+      nextWorkflowStatus =
+        foldl
+          (updateWorkflowStatus (harnessWorkflowSpec config))
+          (harnessWorkflowStatus state)
+          eventsWithActiveSubgoal
+    mapM_ emitToolCallOutcome outcomes
+    if nextWorkflowStatus == harnessWorkflowStatus state
+      then pure ()
+      else harnessEventSink config (workflowStatusEvent nextWorkflowStatus)
+    pure
+      state
+        { harnessHistory =
+            harnessHistory state
+              <> concatMap toolCallOutcomeHistory outcomes
+        , harnessActiveSubgoal =
+            updateActiveSubgoal
+              (harnessActiveSubgoal state)
+              eventsWithActiveSubgoal
+        , harnessWorkflowStatus =
+            nextWorkflowStatus
         }
+
+  runToolCall state toolCall = do
+    let
+      activeSubgoal = harnessActiveSubgoal state
+      effectiveToolCall =
+        canonicalizeWorkflowToolCall (harnessWorkflowSpec config) toolCall
+    emitToolCallObserved activeSubgoal effectiveToolCall
+    outcome <- runEffectiveToolCall activeSubgoal effectiveToolCall
+    let
+      eventsWithActiveSubgoal = toolCallOutcomeEvents outcome
+      nextWorkflowStatus =
+        foldl
+          (updateWorkflowStatus (harnessWorkflowSpec config))
+          (harnessWorkflowStatus state)
+          eventsWithActiveSubgoal
+    emitToolCallOutcome outcome
+    if nextWorkflowStatus == harnessWorkflowStatus state
+      then pure ()
+      else harnessEventSink config (workflowStatusEvent nextWorkflowStatus)
+    pure
+      state
+        { harnessHistory =
+            harnessHistory state <> toolCallOutcomeHistory outcome
+        , harnessActiveSubgoal =
+            updateActiveSubgoal
+              (harnessActiveSubgoal state)
+              eventsWithActiveSubgoal
+        , harnessWorkflowStatus =
+            nextWorkflowStatus
+        }
+
+  runEffectiveToolCall activeSubgoal effectiveToolCall =
     case Map.lookup (toolCallName effectiveToolCall) toolMap of
       Nothing -> do
         let result =
               unknownToolResult effectiveToolCall
-        harnessEventSink
-          config
-          ToolResultObserved
-            { eventCallId = toolCallId effectiveToolCall
-            , eventToolName = toolCallName effectiveToolCall
-            , eventResult = "unknown tool"
-            , eventActiveSubgoal = harnessActiveSubgoal state
+        pure
+          ToolCallOutcome
+            { toolCallOutcomeCall = effectiveToolCall
+            , toolCallOutcomeResult = result
+            , toolCallOutcomeEvents = []
+            , toolCallOutcomeActiveSubgoal = activeSubgoal
             }
-        runToolCalls
-          state{harnessHistory = harnessHistory state <> [ToolResultInput result]}
-          rest
       Just tool -> do
         (result, events) <- runToolHandler tool effectiveToolCall
-        let
-          eventsWithActiveSubgoal =
-            fmap (attachActiveSubgoal (harnessActiveSubgoal state)) events
-          nextWorkflowStatus =
-            foldl
-              (updateWorkflowStatus (harnessWorkflowSpec config))
-              (harnessWorkflowStatus state)
-              eventsWithActiveSubgoal
-        mapM_ (harnessEventSink config) eventsWithActiveSubgoal
-        if nextWorkflowStatus == harnessWorkflowStatus state
-          then pure ()
-          else harnessEventSink config (workflowStatusEvent nextWorkflowStatus)
-        harnessEventSink
-          config
-          ToolResultObserved
-            { eventCallId = toolCallId effectiveToolCall
-            , eventToolName = toolCallName effectiveToolCall
-            , eventResult = messageText (LLMMessage Tool (toolResultContent result))
-            , eventActiveSubgoal = harnessActiveSubgoal state
+        let eventsWithActiveSubgoal =
+              fmap (attachActiveSubgoal activeSubgoal) events
+        pure
+          ToolCallOutcome
+            { toolCallOutcomeCall = effectiveToolCall
+            , toolCallOutcomeResult = result
+            , toolCallOutcomeEvents = eventsWithActiveSubgoal
+            , toolCallOutcomeActiveSubgoal = activeSubgoal
             }
-        runToolCalls
-          state
-            { harnessHistory =
-                harnessHistory state
-                  <> [ToolCallInput effectiveToolCall, ToolResultInput result]
-            , harnessActiveSubgoal =
-                updateActiveSubgoal
-                  (harnessActiveSubgoal state)
-                  eventsWithActiveSubgoal
-            , harnessWorkflowStatus =
-                nextWorkflowStatus
-            }
-          rest
+
+  emitToolCallOutcome outcome = do
+    let
+      toolCall = toolCallOutcomeCall outcome
+      result = toolCallOutcomeResult outcome
+      activeSubgoal = toolCallOutcomeActiveSubgoal outcome
+    mapM_ (harnessEventSink config) (toolCallOutcomeEvents outcome)
+    harnessEventSink
+      config
+      ToolResultObserved
+        { eventCallId = toolCallId toolCall
+        , eventToolName = toolCallName toolCall
+        , eventResult = messageText (LLMMessage Tool (toolResultContent result))
+        , eventActiveSubgoal = activeSubgoal
+        }
+
+  emitToolCallObserved activeSubgoal toolCall =
+    harnessEventSink
+      config
+      ToolCallObserved
+        { eventCallId = toolCallId toolCall
+        , eventToolName = toolCallName toolCall
+        , eventArguments = toolCallArguments toolCall
+        , eventActiveSubgoal = activeSubgoal
+        }
+
+isWorkflowBarrierTool :: ToolCall -> Bool
+isWorkflowBarrierTool toolCall =
+  toolCallName toolCall == "begin_subgoal"
+    || toolCallName toolCall == "end_subgoal"
+
+data ToolCallOutcome = ToolCallOutcome
+  { toolCallOutcomeCall :: ToolCall
+  , toolCallOutcomeResult :: ToolResult
+  , toolCallOutcomeEvents :: [HarnessEvent]
+  , toolCallOutcomeActiveSubgoal :: Maybe Text
+  }
+
+toolCallOutcomeHistory :: ToolCallOutcome -> [LLMInputItem]
+toolCallOutcomeHistory outcome =
+  [ ToolCallInput (toolCallOutcomeCall outcome)
+  , ToolResultInput (toolCallOutcomeResult outcome)
+  ]
 
 attachActiveSubgoal :: Maybe Text -> HarnessEvent -> HarnessEvent
 attachActiveSubgoal activeSubgoal event =
