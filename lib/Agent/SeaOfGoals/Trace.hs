@@ -38,6 +38,11 @@ data HarnessEvent
   | AssistantMessageObserved
       { eventContent :: Text
       }
+  | ReasoningObserved
+      { eventReasoningId :: Maybe Text
+      , eventEncryptedContentChars :: Int
+      , eventReasoningSummaryItems :: Int
+      }
   | ToolCallObserved
       { eventCallId :: Text
       , eventToolName :: Text
@@ -111,6 +116,13 @@ instance ToJSON HarnessEvent where
         base "harness_started" ["prompt" .= prompt]
       AssistantMessageObserved content ->
         base "assistant_message" ["content" .= content]
+      ReasoningObserved reasoningId encryptedContentChars summaryItems ->
+        base
+          "reasoning_observed"
+          [ "reasoning_id" .= reasoningId
+          , "encrypted_content_chars" .= encryptedContentChars
+          , "summary_items" .= summaryItems
+          ]
       ToolCallObserved callId toolName arguments activeSubgoal ->
         base
           "tool_call"
@@ -203,6 +215,7 @@ eventType event =
   case event of
     HarnessStarted{} -> "harness_started"
     AssistantMessageObserved{} -> "assistant_message"
+    ReasoningObserved{} -> "reasoning_observed"
     ToolCallObserved{} -> "tool_call"
     ToolResultObserved{} -> "tool_result"
     SubgoalStarted{} -> "subgoal_started"

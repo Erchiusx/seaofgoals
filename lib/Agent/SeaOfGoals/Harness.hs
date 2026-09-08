@@ -8,11 +8,12 @@ where
 import Agent.SeaOfGoals.LLM
   ( LLM (runLLM)
   , LLMContentPart (TextPart)
-  , LLMInputItem (MessageInput, ToolCallInput, ToolResultInput)
+  , LLMInputItem (MessageInput, ReasoningInput, ToolCallInput, ToolResultInput)
   , LLMMessage (..)
   , LLMRequest (..)
   , LLMResponse (..)
   , LLMRole (..)
+  , ReasoningItem (..)
   , ToolCall (..)
   , ToolResult (..)
   )
@@ -38,10 +39,12 @@ import Control.Concurrent.Async
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as AesonKey
 import Data.Aeson.KeyMap qualified as AesonKeyMap
+import Data.Foldable (toList)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.String (fromString)
 import Data.Text (Text)
+import Data.Text qualified as Text
 
 data HarnessConfig provider = HarnessConfig
   { harnessProvider :: provider
@@ -112,6 +115,8 @@ runHarness config = do
   handleResponse turnsLeft state response = do
     let assistantText = messageText (responseMessage response)
     harnessEventSink config (AssistantMessageObserved assistantText)
+    mapM_ (harnessEventSink config . reasoningObservedEvent) $
+      responseReasoningItems response
     let nextHistory = harnessHistory state <> responseOutput response
     if null (responseToolCalls response)
       then do
@@ -251,6 +256,24 @@ runHarness config = do
         , eventArguments = toolCallArguments toolCall
         , eventActiveSubgoal = activeSubgoal
         }
+
+responseReasoningItems :: LLMResponse -> [ReasoningItem]
+responseReasoningItems response =
+  [reasoningItem | ReasoningInput reasoningItem <- responseOutput response]
+
+reasoningObservedEvent :: ReasoningItem -> HarnessEvent
+reasoningObservedEvent reasoningItem =
+  ReasoningObserved
+    { eventReasoningId = reasoningItemId reasoningItem
+    , eventEncryptedContentChars =
+        Text.length (reasoningItemEncryptedContent reasoningItem)
+    , eventReasoningSummaryItems = summaryItems (reasoningItemSummary reasoningItem)
+    }
+
+summaryItems :: Aeson.Value -> Int
+summaryItems (Aeson.Array items) = length (toList items)
+summaryItems Aeson.Null = 0
+summaryItems _ = 1
 
 isWorkflowBarrierTool :: ToolCall -> Bool
 isWorkflowBarrierTool toolCall =

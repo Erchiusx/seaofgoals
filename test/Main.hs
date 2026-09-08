@@ -303,9 +303,18 @@ gptEndpointEnvTest =
       withEnvVar "OPENAI_BASE_URL" (Just "https://risellm.snakin.top/v1") $ do
         riseEndpoint <- loadGPTEndpointFromEnv
         assertEqual
-          "OPENAI_BASE_URL is expanded to chat completions endpoint"
-          "https://risellm.snakin.top/v1/chat/completions"
+          "OPENAI_BASE_URL is expanded to responses endpoint"
+          "https://risellm.snakin.top/v1/responses"
           riseEndpoint
+      withEnvVar
+        "OPENAI_RESPONSES_URL"
+        (Just "https://example.test/custom/responses")
+        $ do
+          explicitResponsesEndpoint <- loadGPTEndpointFromEnv
+          assertEqual
+            "explicit responses URL wins"
+            "https://example.test/custom/responses"
+            explicitResponsesEndpoint
       withEnvVar
         "OPENAI_CHAT_COMPLETIONS_URL"
         (Just "https://example.test/custom/chat")

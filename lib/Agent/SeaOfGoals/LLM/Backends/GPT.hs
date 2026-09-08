@@ -25,6 +25,7 @@ import Agent.SeaOfGoals.LLM
   , LLMResponse (..)
   , LLMRole (..)
   , LLMUsage
+  , ReasoningItem (..)
   , ResponseFormat (..)
   , ToolCall (..)
   , ToolResult (..)
@@ -42,9 +43,15 @@ import Data.Aeson
   )
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key (Key)
-import Data.Aeson.Types (Pair)
+import Data.Aeson.KeyMap qualified as AesonKeyMap
+import Data.Aeson.Types
+  ( Pair
+  , Parser
+  )
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.ByteString.Lazy.Char8 qualified as LazyByteStringChar8
+import Data.Foldable (toList)
+import Data.List (isSuffixOf)
 import Data.Maybe (catMaybes)
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -58,22 +65,24 @@ data GPTBackend = GPTBackend
   deriving stock (Eq, Show)
 
 defaultGPTEndpoint :: String
-defaultGPTEndpoint = "https://api.openai.com/v1/chat/completions"
+defaultGPTEndpoint = "https://api.openai.com/v1/responses"
 
 loadGPTEndpointFromEnv :: IO String
 loadGPTEndpointFromEnv = do
+  maybeResponsesUrl <- lookupEnv "OPENAI_RESPONSES_URL"
   maybeChatCompletionsUrl <- lookupEnv "OPENAI_CHAT_COMPLETIONS_URL"
   maybeBaseUrl <- lookupEnv "OPENAI_BASE_URL"
   pure $
     firstNonEmpty
       defaultGPTEndpoint
-      [ maybeChatCompletionsUrl
-      , fmap chatCompletionsUrl maybeBaseUrl
+      [ maybeResponsesUrl
+      , maybeChatCompletionsUrl
+      , fmap responsesUrl maybeBaseUrl
       ]
 
-chatCompletionsUrl :: String -> String
-chatCompletionsUrl baseUrl =
-  stripTrailingSlash baseUrl <> "/chat/completions"
+responsesUrl :: String -> String
+responsesUrl baseUrl =
+  stripTrailingSlash baseUrl <> "/responses"
 
 stripTrailingSlash :: String -> String
 stripTrailingSlash =
@@ -94,12 +103,17 @@ instance LLM GPTBackend where
           { transportMethod = "POST"
           , transportUrl = gptEndpoint backend
           , transportHeaders = [("Authorization", "Bearer " <> gptApiKey backend)]
-          , transportBody = Just (toGPTRequest request)
+          , transportBody = Just (toGPTRequestForEndpoint (gptEndpoint backend) request)
           }
-    pure (result >>= fromGPTResponse request)
+    pure (result >>= fromGPTResponseForEndpoint (gptEndpoint backend) request)
 
-toGPTRequest :: LLMRequest -> Value
-toGPTRequest request =
+toGPTRequestForEndpoint :: String -> LLMRequest -> Value
+toGPTRequestForEndpoint endpoint request
+  | isResponsesEndpoint endpoint = toResponsesRequest request
+  | otherwise = toChatCompletionsRequest request
+
+toChatCompletionsRequest :: LLMRequest -> Value
+toChatCompletionsRequest request =
   object
     ( catMaybes
         [ Just ("model" .= requestModel request)
@@ -112,6 +126,96 @@ toGPTRequest request =
         ]
     )
 
+toResponsesRequest :: LLMRequest -> Value
+toResponsesRequest request =
+  object
+    ( catMaybes
+        [ Just ("model" .= requestModel request)
+        , Just ("input" .= concatMap toResponsesInputItem (nonSystemInputItems request))
+        , nonEmptyText "instructions" (systemInstructions request)
+        , ("temperature" .=) <$> requestTemperature request
+        , ("max_output_tokens" .=) <$> requestMaxTokens request
+        , responseTextPair (requestResponseFormat request)
+        , Just ("include" .= ["reasoning.encrypted_content" :: Text])
+        , nonEmpty "tools" (fmap chatToolToResponsesTool (requestTools request))
+        , Just ("parallel_tool_calls" .= True)
+        , Just ("store" .= False)
+        ]
+    )
+
+systemInstructions :: LLMRequest -> Text
+systemInstructions request =
+  Text.intercalate
+    "\n\n"
+    [ contentPartsText content
+    | MessageInput LLMMessage{messageRole = System, messageContent = content} <-
+        requestInput request
+    ]
+
+nonSystemInputItems :: LLMRequest -> [LLMInputItem]
+nonSystemInputItems request =
+  [ item
+  | item <- requestInput request
+  , case item of
+      MessageInput LLMMessage{messageRole = System} -> False
+      _ -> True
+  ]
+
+toResponsesInputItem :: LLMInputItem -> [Value]
+toResponsesInputItem (MessageInput message) = [toResponsesMessage message]
+toResponsesInputItem (ToolCallInput toolCall) = [toResponsesToolCallItem toolCall]
+toResponsesInputItem (ToolResultInput toolResult) = [toResponsesToolResultItem toolResult]
+toResponsesInputItem (ArtifactInput artifactRef) =
+  [ object
+      [ "role" .= Aeson.String "user"
+      , "content" .= artifactRefText artifactRef
+      ]
+  ]
+toResponsesInputItem (ReasoningInput reasoningItem) =
+  [toResponsesReasoningItem reasoningItem]
+
+toResponsesMessage :: LLMMessage -> Value
+toResponsesMessage message =
+  object
+    [ "role" .= roleName (messageRole message)
+    , "content" .= contentPartsText (messageContent message)
+    ]
+
+toResponsesToolCallItem :: ToolCall -> Value
+toResponsesToolCallItem toolCall =
+  object
+    [ "type" .= Aeson.String "function_call"
+    , "call_id" .= toolCallId toolCall
+    , "name" .= toolCallName toolCall
+    , "arguments" .= encodeToolArguments (toolCallArguments toolCall)
+    ]
+
+toResponsesToolResultItem :: ToolResult -> Value
+toResponsesToolResultItem toolResult =
+  object
+    [ "type" .= Aeson.String "function_call_output"
+    , "call_id" .= toolResultCallId toolResult
+    , "output" .= contentPartsText (toolResultContent toolResult)
+    ]
+
+toResponsesReasoningItem :: ReasoningItem -> Value
+toResponsesReasoningItem reasoningItem =
+  object
+    ( catMaybes
+        [ Just ("type" .= Aeson.String "reasoning")
+        , ("id" .=) <$> reasoningItemId reasoningItem
+        , Just ("encrypted_content" .= reasoningItemEncryptedContent reasoningItem)
+        , Just ("summary" .= reasoningItemSummary reasoningItem)
+        ]
+    )
+
+chatToolToResponsesTool :: Value -> Value
+chatToolToResponsesTool (Aeson.Object toolObject)
+  | Just (Aeson.Object functionObject) <- AesonKeyMap.lookup "function" toolObject =
+      Aeson.Object
+        (AesonKeyMap.insert "type" (Aeson.String "function") functionObject)
+chatToolToResponsesTool value = value
+
 tokenLimitPair :: Text -> Int -> Pair
 tokenLimitPair model maxTokens
   | "gpt-5" `Text.isPrefixOf` model = "max_completion_tokens" .= maxTokens
@@ -122,6 +226,7 @@ toGPTInputItem (MessageInput message) = [toGPTMessage message]
 toGPTInputItem (ToolCallInput toolCall) = [toGPTToolCallMessage toolCall]
 toGPTInputItem (ToolResultInput toolResult) = [toGPTToolResultMessage toolResult]
 toGPTInputItem (ArtifactInput artifactRef) = [toGPTArtifactMessage artifactRef]
+toGPTInputItem (ReasoningInput _) = []
 
 toGPTMessage :: LLMMessage -> Value
 toGPTMessage message =
@@ -176,9 +281,32 @@ responseFormatPair (JsonSchema schema) =
         .= object ["type" .= Aeson.String "json_schema", "json_schema" .= schema]
     )
 
-fromGPTResponse
+responseTextPair :: ResponseFormat -> Maybe Pair
+responseTextPair PlainText = Nothing
+responseTextPair JsonObject =
+  Just
+    ("text" .= object ["format" .= object ["type" .= Aeson.String "json_object"]])
+responseTextPair (JsonSchema schema) =
+  Just
+    ( "text"
+        .= object
+          [ "format"
+              .= object
+                [ "type" .= Aeson.String "json_schema"
+                , "json_schema" .= schema
+                ]
+          ]
+    )
+
+fromGPTResponseForEndpoint
+  :: String -> LLMRequest -> TransportResponse -> Either LLMError LLMResponse
+fromGPTResponseForEndpoint endpoint request response
+  | isResponsesEndpoint endpoint = fromResponsesResponse request response
+  | otherwise = fromChatCompletionsResponse request response
+
+fromChatCompletionsResponse
   :: LLMRequest -> TransportResponse -> Either LLMError LLMResponse
-fromGPTResponse request response =
+fromChatCompletionsResponse request response =
   case decode (transportResponseBody response) of
     Nothing -> Left (LLMProviderError "Could not decode GPT response")
     Just gptResponse ->
@@ -204,6 +332,33 @@ fromGPTResponse request response =
               , responseFinishReason = gptChoiceFinishReason choice
               }
 
+fromResponsesResponse
+  :: LLMRequest -> TransportResponse -> Either LLMError LLMResponse
+fromResponsesResponse request response =
+  case decode (transportResponseBody response) of
+    Nothing -> Left (LLMProviderError "Could not decode Responses API response")
+    Just responsesResponse ->
+      let
+        content =
+          Text.intercalate "\n" (responsesOutputText (responsesOutput responsesResponse))
+        toolCalls = concatMap responsesOutputToolCalls (responsesOutput responsesResponse)
+       in
+        Right
+          LLMResponse
+            { responseModel =
+                maybe (requestModel request) id (responsesModel responsesResponse)
+            , responseMessage =
+                LLMMessage
+                  { messageRole = Assistant
+                  , messageContent = [TextPart content]
+                  }
+            , responseToolCalls = toolCalls
+            , responseOutput =
+                responseItemsWithReasoning content (responsesOutput responsesResponse)
+            , responseUsage = responsesUsage responsesResponse
+            , responseFinishReason = responsesStatus responsesResponse
+            }
+
 responseItems :: Text -> [ToolCall] -> [LLMInputItem]
 responseItems content toolCalls
   | Text.null content && not (null toolCalls) = []
@@ -211,6 +366,18 @@ responseItems content toolCalls
       [ MessageInput
           LLMMessage{messageRole = Assistant, messageContent = [TextPart content]}
       ]
+
+responseItemsWithReasoning :: Text -> [ResponsesOutputItem] -> [LLMInputItem]
+responseItemsWithReasoning content outputItems =
+  [ ReasoningInput reasoningItem
+  | ResponsesReasoningItem reasoningItem <- outputItems
+  ]
+    <> if Text.null content
+      then []
+      else
+        [ MessageInput
+            LLMMessage{messageRole = Assistant, messageContent = [TextPart content]}
+        ]
 
 data GPTResponse = GPTResponse
   { gptResponseModel :: Maybe Text
@@ -225,6 +392,81 @@ instance FromJSON GPTResponse where
         <$> objectValue .:? "model"
         <*> objectValue .: "choices"
         <*> objectValue .:? "usage"
+
+data ResponsesResponse = ResponsesResponse
+  { responsesModel :: Maybe Text
+  , responsesStatus :: Maybe Text
+  , responsesOutput :: [ResponsesOutputItem]
+  , responsesUsage :: Maybe LLMUsage
+  }
+
+instance FromJSON ResponsesResponse where
+  parseJSON =
+    withObject "ResponsesResponse" $ \objectValue ->
+      ResponsesResponse
+        <$> objectValue .:? "model"
+        <*> objectValue .:? "status"
+        <*> objectValue .:? "output" .!= []
+        <*> objectValue .:? "usage"
+
+data ResponsesOutputItem
+  = ResponsesMessageItem Text
+  | ResponsesFunctionCallItem ToolCall
+  | ResponsesReasoningItem ReasoningItem
+  | ResponsesIgnoredItem
+
+instance FromJSON ResponsesOutputItem where
+  parseJSON =
+    withObject "ResponsesOutputItem" $ \objectValue -> do
+      itemType <- objectValue .: "type"
+      case itemType of
+        Aeson.String "message" ->
+          ResponsesMessageItem <$> parseResponsesMessageText objectValue
+        Aeson.String "function_call" ->
+          ResponsesFunctionCallItem
+            <$> ( ToolCall
+                    <$> objectValue .: "call_id"
+                    <*> objectValue .: "name"
+                    <*> (normalizeToolArguments <$> objectValue .: "arguments")
+                )
+        Aeson.String "reasoning" ->
+          ResponsesReasoningItem
+            <$> ( ReasoningItem
+                    <$> objectValue .:? "id"
+                    <*> objectValue .: "encrypted_content"
+                    <*> objectValue .:? "summary" .!= Aeson.Array mempty
+                )
+        Aeson.String _ -> pure ResponsesIgnoredItem
+        _ -> fail "Responses output item type must be a string"
+
+parseResponsesMessageText :: Aeson.Object -> Parser Text
+parseResponsesMessageText objectValue = do
+  contentValue <- objectValue .:? "content" .!= Aeson.Null
+  case contentValue of
+    Aeson.String text -> pure text
+    Aeson.Array items ->
+      Text.intercalate "\n" <$> traverse parseResponsesContentPartText (toList items)
+    Aeson.Null -> pure ""
+    _ -> fail "Responses message content must be a string or array"
+
+parseResponsesContentPartText :: Value -> Parser Text
+parseResponsesContentPartText =
+  withObject "ResponsesMessageContentPart" $ \objectValue -> do
+    partType <- objectValue .:? "type" .!= Aeson.String "output_text"
+    case partType of
+      Aeson.String "output_text" -> objectValue .: "text"
+      Aeson.String "text" -> objectValue .: "text"
+      Aeson.String "refusal" -> objectValue .:? "refusal" .!= ""
+      Aeson.String _ -> pure ""
+      _ -> fail "Responses message content part type must be a string"
+
+responsesOutputText :: [ResponsesOutputItem] -> [Text]
+responsesOutputText items =
+  [text | ResponsesMessageItem text <- items, not (Text.null text)]
+
+responsesOutputToolCalls :: ResponsesOutputItem -> [ToolCall]
+responsesOutputToolCalls (ResponsesFunctionCallItem toolCall) = [toolCall]
+responsesOutputToolCalls _ = []
 
 data GPTChoice = GPTChoice
   { gptChoiceMessage :: GPTMessage
@@ -346,3 +588,11 @@ imageDetailName High = "high"
 nonEmpty :: Aeson.ToJSON value => Key -> [value] -> Maybe Pair
 nonEmpty _ [] = Nothing
 nonEmpty key values = Just (key .= values)
+
+nonEmptyText :: Key -> Text -> Maybe Pair
+nonEmptyText _ "" = Nothing
+nonEmptyText key value = Just (key .= value)
+
+isResponsesEndpoint :: String -> Bool
+isResponsesEndpoint endpoint =
+  "/responses" `isSuffixOf` stripTrailingSlash endpoint

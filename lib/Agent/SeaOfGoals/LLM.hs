@@ -9,6 +9,7 @@ module Agent.SeaOfGoals.LLM
   , FileRef (..)
   , AudioRef (..)
   , ArtifactRef (..)
+  , ReasoningItem (..)
   , ImageDetail (..)
   , LLMRole (..)
   , LLMUsage (..)
@@ -32,6 +33,7 @@ import Data.Aeson
   , withObject
   , withText
   , (.:)
+  , (.:?)
   , (.=)
   )
 import Data.Aeson qualified as Aeson
@@ -82,6 +84,7 @@ data LLMInputItem
   | ToolCallInput ToolCall
   | ToolResultInput ToolResult
   | ArtifactInput ArtifactRef
+  | ReasoningInput ReasoningItem
   deriving stock (Eq, Show, Generic)
 
 instance ToJSON LLMInputItem where
@@ -93,6 +96,8 @@ instance ToJSON LLMInputItem where
     object ["type" .= Aeson.String "tool_result", "tool_result" .= toolResult]
   toJSON (ArtifactInput artifactRef) =
     object ["type" .= Aeson.String "artifact", "artifact" .= artifactRef]
+  toJSON (ReasoningInput reasoningItem) =
+    object ["type" .= Aeson.String "reasoning", "reasoning" .= reasoningItem]
 
 instance FromJSON LLMInputItem where
   parseJSON =
@@ -103,6 +108,7 @@ instance FromJSON LLMInputItem where
         Aeson.String "tool_call" -> ToolCallInput <$> objectValue .: "tool_call"
         Aeson.String "tool_result" -> ToolResultInput <$> objectValue .: "tool_result"
         Aeson.String "artifact" -> ArtifactInput <$> objectValue .: "artifact"
+        Aeson.String "reasoning" -> ReasoningInput <$> objectValue .: "reasoning"
         Aeson.String _ -> fail "Unknown LLM input item type"
         _ -> fail "LLM input item type must be a string"
 
@@ -199,6 +205,19 @@ instance ToJSON ArtifactRef where
 instance FromJSON ArtifactRef where
   parseJSON = genericParseJSON (prefixedOptions "artifactRef")
 
+data ReasoningItem = ReasoningItem
+  { reasoningItemId :: Maybe Text
+  , reasoningItemEncryptedContent :: Text
+  , reasoningItemSummary :: Value
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON ReasoningItem where
+  toJSON = genericToJSON (prefixedOptions "reasoningItem")
+
+instance FromJSON ReasoningItem where
+  parseJSON = genericParseJSON (prefixedOptions "reasoningItem")
+
 data ImageDetail
   = Auto
   | Low
@@ -235,7 +254,16 @@ instance ToJSON LLMUsage where
   toJSON = genericToJSON (prefixedOptions "usage")
 
 instance FromJSON LLMUsage where
-  parseJSON = genericParseJSON (prefixedOptions "usage")
+  parseJSON =
+    withObject "LLMUsage" $ \objectValue ->
+      LLMUsage
+        <$> ( objectValue .:? "prompt_tokens"
+                >>= maybe (objectValue .: "input_tokens") pure
+            )
+        <*> ( objectValue .:? "completion_tokens"
+                >>= maybe (objectValue .: "output_tokens") pure
+            )
+        <*> objectValue .: "total_tokens"
 
 data LLMError
   = LLMProviderError Text

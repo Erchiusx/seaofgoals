@@ -93,6 +93,7 @@ toGeminiInputItem (MessageInput message) = [toGeminiContent message]
 toGeminiInputItem (ToolCallInput toolCall) = [toGeminiToolCallContent toolCall]
 toGeminiInputItem (ToolResultInput toolResult) = [toGeminiToolResultContent toolResult]
 toGeminiInputItem (ArtifactInput artifactRef) = [toGeminiArtifactContent artifactRef]
+toGeminiInputItem (ReasoningInput _) = []
 
 toGeminiContent :: LLMMessage -> Value
 toGeminiContent message =
@@ -294,6 +295,7 @@ nonSystemInputItem (MessageInput message) = messageRole message /= System
 nonSystemInputItem (ToolCallInput _) = True
 nonSystemInputItem (ToolResultInput _) = True
 nonSystemInputItem (ArtifactInput _) = True
+nonSystemInputItem (ReasoningInput _) = False
 
 geminiRoleName :: LLMRole -> Text
 geminiRoleName System = "user"

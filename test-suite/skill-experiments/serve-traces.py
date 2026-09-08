@@ -446,6 +446,13 @@ INDEX_HTML = r"""<!doctype html>
       if (type === "assistant_message") {
         return { role: "assistant", kind: type, timestamp, title: "assistant", body: event.content || "(empty)" };
       }
+      if (type === "reasoning_observed") {
+        return { role: "harness", kind: type, timestamp, title: "reasoning observed", body: stringify({
+          reasoning_id: event.reasoning_id || null,
+          encrypted_content_chars: event.encrypted_content_chars || 0,
+          summary_items: event.summary_items || 0,
+        }) };
+      }
       if (type === "tool_call") {
         return { role: "assistant", kind: type, timestamp, title: `tool call · ${event.tool_name || "?"}`, body: stringify(event.arguments) };
       }
