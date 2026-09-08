@@ -288,6 +288,8 @@ instance FromJSON GeminiUsage where
             <$> objectValue .:? "promptTokenCount" .!= 0
             <*> objectValue .:? "candidatesTokenCount" .!= 0
             <*> objectValue .:? "totalTokenCount" .!= 0
+            <*> pure Nothing
+            <*> pure Nothing
         )
 
 nonSystemInputItem :: LLMInputItem -> Bool

@@ -1668,6 +1668,8 @@ requestTemplate =
     , requestResponseFormat = PlainText
     , requestTools = []
     , requestConfig = Nothing
+    , requestPromptCacheKey = Nothing
+    , requestPromptCacheRetention = Nothing
     }
 
 testTools :: [ToolSpec]

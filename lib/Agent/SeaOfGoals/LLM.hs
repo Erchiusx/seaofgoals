@@ -37,6 +37,7 @@ import Data.Aeson
   , (.=)
   )
 import Data.Aeson qualified as Aeson
+import Data.Aeson.Types qualified as AesonTypes
 import Data.Char (isUpper, toLower)
 import Data.List (stripPrefix)
 import Data.Text (Text)
@@ -54,6 +55,8 @@ data LLMRequest = LLMRequest
   , requestResponseFormat :: ResponseFormat
   , requestTools :: [Value]
   , requestConfig :: Maybe LLMConfig
+  , requestPromptCacheKey :: Maybe Text
+  , requestPromptCacheRetention :: Maybe Text
   }
   deriving stock (Eq, Show, Generic)
 
@@ -247,6 +250,8 @@ data LLMUsage = LLMUsage
   { usagePromptTokens :: Int
   , usageCompletionTokens :: Int
   , usageTotalTokens :: Int
+  , usageCachedTokens :: Maybe Int
+  , usageReasoningTokens :: Maybe Int
   }
   deriving stock (Eq, Show, Generic)
 
@@ -257,13 +262,34 @@ instance FromJSON LLMUsage where
   parseJSON =
     withObject "LLMUsage" $ \objectValue ->
       LLMUsage
-        <$> ( objectValue .:? "prompt_tokens"
-                >>= maybe (objectValue .: "input_tokens") pure
-            )
-        <*> ( objectValue .:? "completion_tokens"
-                >>= maybe (objectValue .: "output_tokens") pure
-            )
+        <$> promptTokenCount objectValue
+        <*> completionTokenCount objectValue
         <*> objectValue .: "total_tokens"
+        <*> cachedTokenCount objectValue
+        <*> reasoningTokenCount objectValue
+
+promptTokenCount :: AesonTypes.Object -> AesonTypes.Parser Int
+promptTokenCount objectValue =
+  objectValue .:? "prompt_tokens" >>= maybe (objectValue .: "input_tokens") pure
+
+completionTokenCount :: AesonTypes.Object -> AesonTypes.Parser Int
+completionTokenCount objectValue =
+  objectValue .:? "completion_tokens"
+    >>= maybe (objectValue .: "output_tokens") pure
+
+cachedTokenCount :: AesonTypes.Object -> AesonTypes.Parser (Maybe Int)
+cachedTokenCount objectValue = do
+  details <- objectValue .:? "input_tokens_details"
+  case details of
+    Nothing -> pure Nothing
+    Just detailsObject -> detailsObject .:? "cached_tokens"
+
+reasoningTokenCount :: AesonTypes.Object -> AesonTypes.Parser (Maybe Int)
+reasoningTokenCount objectValue = do
+  details <- objectValue .:? "output_tokens_details"
+  case details of
+    Nothing -> pure Nothing
+    Just detailsObject -> detailsObject .:? "reasoning_tokens"
 
 data LLMError
   = LLMProviderError Text

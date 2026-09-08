@@ -263,6 +263,8 @@ compileSkill provider model skillName skillText = do
         , requestResponseFormat = JsonObject
         , requestTools = []
         , requestConfig = Nothing
+        , requestPromptCacheKey = Nothing
+        , requestPromptCacheRetention = Nothing
         }
   case result of
     Left err -> pure (Left (Text.pack (show err)))

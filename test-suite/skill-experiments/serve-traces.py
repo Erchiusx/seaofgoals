@@ -453,6 +453,15 @@ INDEX_HTML = r"""<!doctype html>
           summary_items: event.summary_items || 0,
         }) };
       }
+      if (type === "model_usage") {
+        return { role: "harness", kind: type, timestamp, title: "model usage", body: stringify({
+          input_tokens: event.input_tokens || 0,
+          cached_input_tokens: event.cached_input_tokens || 0,
+          output_tokens: event.output_tokens || 0,
+          reasoning_output_tokens: event.reasoning_output_tokens || 0,
+          total_tokens: event.total_tokens || 0,
+        }) };
+      }
       if (type === "tool_call") {
         return { role: "assistant", kind: type, timestamp, title: `tool call · ${event.tool_name || "?"}`, body: stringify(event.arguments) };
       }

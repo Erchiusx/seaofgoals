@@ -286,6 +286,9 @@ loadExperimentContext apiKey prompt = do
       (pure . normalise)
       =<< lookupEnv "SOG_TRACE_PATH"
   model <- Text.pack . fromMaybe "gpt-5.5" <$> lookupEnv "SOG_MODEL"
+  promptCacheKey <- fmap Text.pack <$> lookupNonEmptyEnv "SOG_PROMPT_CACHE_KEY"
+  promptCacheRetention <-
+    fmap Text.pack <$> lookupNonEmptyEnv "SOG_PROMPT_CACHE_RETENTION"
   config <- loadConfigFromEnv
   agentRunner <- loadAgentRunnerMode
   codexProcessConfig <- loadCodexProcessConfigFromEnv
@@ -325,6 +328,8 @@ loadExperimentContext apiKey prompt = do
         , requestResponseFormat = PlainText
         , requestTools = []
         , requestConfig = Nothing
+        , requestPromptCacheKey = promptCacheKey
+        , requestPromptCacheRetention = promptCacheRetention
         }
     workflowPrompt = maybe "" renderWorkflowPrompt workflowSpec
     baseSystemPrompt =
@@ -1740,6 +1745,14 @@ loadHarnessLifecycleMode = do
         Just "off" -> False
         _ -> True
     )
+
+lookupNonEmptyEnv :: String -> IO (Maybe String)
+lookupNonEmptyEnv name = do
+  value <- lookupEnv name
+  pure $
+    case value of
+      Just text | not (null text) -> Just text
+      _ -> Nothing
 
 loadWorkflowSpecFromEnv :: IO (Maybe WorkflowSpec)
 loadWorkflowSpecFromEnv = do

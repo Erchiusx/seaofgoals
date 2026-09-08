@@ -43,6 +43,13 @@ data HarnessEvent
       , eventEncryptedContentChars :: Int
       , eventReasoningSummaryItems :: Int
       }
+  | ModelUsageObserved
+      { eventInputTokens :: Int
+      , eventCachedInputTokens :: Maybe Int
+      , eventOutputTokens :: Int
+      , eventReasoningOutputTokens :: Maybe Int
+      , eventTotalTokens :: Int
+      }
   | ToolCallObserved
       { eventCallId :: Text
       , eventToolName :: Text
@@ -123,6 +130,20 @@ instance ToJSON HarnessEvent where
           , "encrypted_content_chars" .= encryptedContentChars
           , "summary_items" .= summaryItems
           ]
+      ModelUsageObserved
+        inputTokens
+        cachedInputTokens
+        outputTokens
+        reasoningOutputTokens
+        totalTokens ->
+          base
+            "model_usage"
+            [ "input_tokens" .= inputTokens
+            , "cached_input_tokens" .= cachedInputTokens
+            , "output_tokens" .= outputTokens
+            , "reasoning_output_tokens" .= reasoningOutputTokens
+            , "total_tokens" .= totalTokens
+            ]
       ToolCallObserved callId toolName arguments activeSubgoal ->
         base
           "tool_call"
@@ -216,6 +237,7 @@ eventType event =
     HarnessStarted{} -> "harness_started"
     AssistantMessageObserved{} -> "assistant_message"
     ReasoningObserved{} -> "reasoning_observed"
+    ModelUsageObserved{} -> "model_usage"
     ToolCallObserved{} -> "tool_call"
     ToolResultObserved{} -> "tool_result"
     SubgoalStarted{} -> "subgoal_started"

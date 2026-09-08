@@ -28,17 +28,34 @@ OpenAI-compatible RISE endpoint:
 
 ## Immediate Work Items
 
-1. Commit the current Responses API and encrypted reasoning history support.
-2. Add usage trace events for every model response:
+Done:
+
+- Current Responses API and encrypted reasoning history support are committed in
+  `db5ecf0 Switch API harness to Responses`.
+- Usage trace events are emitted for every model response.
+- Prompt cache request support is available through environment variables and
+  experiment defaults.
+
+Implemented usage fields:
+
    - input tokens
    - cached input tokens
    - output tokens
    - reasoning output tokens
    - total tokens
-3. Add prompt cache request support:
+
+Implemented prompt cache fields:
+
    - `prompt_cache_key`
    - `prompt_cache_retention`
-   - stable cache key construction for experiments
+   - stable cache key construction for `run-experiment.sh`
+
+Current environment knobs:
+
+- `SOG_PROMPT_CACHE_KEY`
+- `SOG_PROMPT_CACHE_RETENTION`
+- `SOG_HARNESS_LIFECYCLE`
+- `SOG_MODEL`
 
 ## Next Experiments
 

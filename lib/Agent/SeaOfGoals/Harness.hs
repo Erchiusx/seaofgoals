@@ -13,6 +13,7 @@ import Agent.SeaOfGoals.LLM
   , LLMRequest (..)
   , LLMResponse (..)
   , LLMRole (..)
+  , LLMUsage (..)
   , ReasoningItem (..)
   , ToolCall (..)
   , ToolResult (..)
@@ -115,6 +116,7 @@ runHarness config = do
   handleResponse turnsLeft state response = do
     let assistantText = messageText (responseMessage response)
     harnessEventSink config (AssistantMessageObserved assistantText)
+    mapM_ (harnessEventSink config . usageObservedEvent) (responseUsage response)
     mapM_ (harnessEventSink config . reasoningObservedEvent) $
       responseReasoningItems response
     let nextHistory = harnessHistory state <> responseOutput response
@@ -274,6 +276,16 @@ summaryItems :: Aeson.Value -> Int
 summaryItems (Aeson.Array items) = length (toList items)
 summaryItems Aeson.Null = 0
 summaryItems _ = 1
+
+usageObservedEvent :: LLMUsage -> HarnessEvent
+usageObservedEvent usage =
+  ModelUsageObserved
+    { eventInputTokens = usagePromptTokens usage
+    , eventCachedInputTokens = usageCachedTokens usage
+    , eventOutputTokens = usageCompletionTokens usage
+    , eventReasoningOutputTokens = usageReasoningTokens usage
+    , eventTotalTokens = usageTotalTokens usage
+    }
 
 isWorkflowBarrierTool :: ToolCall -> Bool
 isWorkflowBarrierTool toolCall =

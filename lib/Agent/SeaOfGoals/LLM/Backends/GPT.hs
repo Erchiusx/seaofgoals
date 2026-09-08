@@ -140,6 +140,8 @@ toResponsesRequest request =
         , nonEmpty "tools" (fmap chatToolToResponsesTool (requestTools request))
         , Just ("parallel_tool_calls" .= True)
         , Just ("store" .= False)
+        , ("prompt_cache_key" .=) <$> requestPromptCacheKey request
+        , ("prompt_cache_retention" .=) <$> requestPromptCacheRetention request
         ]
     )
 

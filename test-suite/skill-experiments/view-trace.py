@@ -11,6 +11,8 @@ from pathlib import Path
 EVENT_GLYPHS = {
     "harness_started": "◆",
     "assistant_message": "│",
+    "reasoning_observed": "∙",
+    "model_usage": "◎",
     "tool_call": "▶",
     "tool_result": "◀",
     "subgoal_started": "┌",
@@ -188,6 +190,15 @@ class Renderer:
         if event_type == "assistant_message":
             content = event.get("content", "")
             return "assistant" if content else "assistant (empty)"
+        if event_type == "reasoning_observed":
+            return f"reasoning encrypted_chars={event.get('encrypted_content_chars', 0)}"
+        if event_type == "model_usage":
+            return (
+                f"usage input={event.get('input_tokens', 0)} "
+                f"cached={event.get('cached_input_tokens') or 0} "
+                f"output={event.get('output_tokens', 0)} "
+                f"reasoning={event.get('reasoning_output_tokens') or 0}"
+            )
         if event_type == "tool_call":
             return f"tool call {self.style(event.get('tool_name', '?'), 'tool')} {event.get('call_id', '')}"
         if event_type == "tool_result":
