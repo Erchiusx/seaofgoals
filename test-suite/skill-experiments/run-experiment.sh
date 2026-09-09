@@ -42,8 +42,12 @@ fi
 export SOG_SKILL_TEXT
 SOG_SKILL_TEXT="$(<"$skill_path")"
 
-export SOG_SERIAL_GOALS_TEXT
-SOG_SERIAL_GOALS_TEXT="$(<"$experiment_dir/sog.json")"
+if [ "${SOG_DISABLE_WORKFLOW:-}" = "1" ] || [ "${SOG_DISABLE_WORKFLOW:-}" = "true" ]; then
+  unset SOG_SERIAL_GOALS_TEXT SOG_SERIAL_GOALS
+else
+  export SOG_SERIAL_GOALS_TEXT
+  SOG_SERIAL_GOALS_TEXT="$(<"$experiment_dir/sog.json")"
+fi
 export SOG_SCHEDULER="${SOG_SCHEDULER:-serial}"
 if [ "$SOG_SCHEDULER" = "concurrent" ]; then
   export SOG_SANDBOX="${SOG_SANDBOX:-bwrap}"

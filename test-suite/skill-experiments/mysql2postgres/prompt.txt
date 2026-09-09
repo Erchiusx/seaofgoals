@@ -3,8 +3,7 @@ You are testing the mysql2postgres skill.
 Task:
 Migrate the small Java/Spring/MyBatis fixture in /workspace from MySQL-oriented database code to PostgreSQL-oriented database code.
 
-Before each meaningful step, call begin_subgoal.
-After each step, call end_subgoal.
+If end_goal is available, call it once when the assigned goal is complete, with its id, status, and summary.
 Use shell for local inspection commands.
 Use write_file for actual file edits, writing the complete target file content.
 record_effect only records side effects; it does not edit files.

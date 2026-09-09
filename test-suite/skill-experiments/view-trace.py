@@ -190,6 +190,8 @@ class Renderer:
         if event_type == "assistant_message":
             content = event.get("content", "")
             return "assistant" if content else "assistant (empty)"
+        if event_type == "user_message":
+            return "user (harness reminder)"
         if event_type == "reasoning_observed":
             return f"reasoning encrypted_chars={event.get('encrypted_content_chars', 0)}"
         if event_type == "model_usage":
@@ -221,7 +223,7 @@ class Renderer:
 
     def event_detail(self, event):
         event_type = event.get("type")
-        if event_type == "assistant_message":
+        if event_type in ("assistant_message", "user_message"):
             return event.get("content", "")
         if event_type == "tool_call":
             return format_jsonish(event.get("arguments"))

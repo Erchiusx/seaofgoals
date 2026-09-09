@@ -4,8 +4,7 @@ Task:
 Create webhook triggers for the Acme CRM service in /workspace.
 
 Use the local research note at docs/acme-webhooks.md as the service documentation. Do not call external APIs.
-Before each meaningful step, call begin_subgoal if the tool is available.
-After each step, call end_subgoal if the tool is available.
+If end_goal is available, call it once when the assigned goal is complete, with its id, status, and summary.
 Use shell for local inspection commands and edits.
 When searching the workspace, exclude sog-trace.jsonl and other generated trace/log files.
 
@@ -20,4 +19,3 @@ Concrete fixture requirements:
 - Add provider-specific formatWebhookInput handling in apps/sim/triggers/webhook-input.ts because the Acme payload wraps event data under `data`.
 - Do not add automatic webhook registration; the local docs say Acme CRM supports manual webhook setup only.
 - Validate with: node scripts/check-add-trigger.js
-

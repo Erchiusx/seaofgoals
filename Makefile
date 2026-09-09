@@ -12,6 +12,10 @@ lint:
 test:
 	cabal test
 
+.PHONY: test-port-widget-fixture
+test-port-widget-fixture:
+	node --test test-suite/skill-experiments/port-widget/checker.test.mjs
+
 compile-skill:
 	test -n "$(SKILL_PATH)"
 	cabal run exe:SeaOfGoals-compiler -- "$(SKILL_PATH)" "$(COMPILED_GOALS_OUT)" "$(SKILL_NAME)"

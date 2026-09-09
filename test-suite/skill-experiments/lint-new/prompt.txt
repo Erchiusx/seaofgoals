@@ -5,8 +5,7 @@ Create a new eslintPluginScraps rule named no-raw-color in /workspace.
 
 The rule should report raw hex color literals in JSX style objects and offer an autofix to replace "#ff0000" with "theme.colors.danger". Keep the implementation intentionally narrow for this fixture: only the literal "#ff0000" needs to be handled.
 
-Before each meaningful step, call begin_subgoal if the tool is available.
-After each step, call end_subgoal if the tool is available.
+If end_goal is available, call it once when the assigned goal is complete, with its id, status, and summary.
 Use shell for local inspection commands and edits.
 Do not finish until the concrete fixture requirements below pass.
 When searching the workspace, exclude sog-trace.jsonl and other generated trace/log files.
@@ -19,4 +18,3 @@ Concrete fixture requirements:
 - Validate with: node scripts/check-lint-new.js
 
 Do not call external APIs.
-

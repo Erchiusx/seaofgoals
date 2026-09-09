@@ -3,8 +3,7 @@ You are testing the port-widget skill.
 Task:
 Port the existing InstantSearch connector `connectColorMenu` into a user-facing `colorMenu` widget across the minimal repository in /workspace.
 
-Before each meaningful step, call begin_subgoal if the tool is available.
-After each step, call end_subgoal if the tool is available.
+If end_goal is available, call it once when the assigned goal is complete, with its id, status, and summary.
 Use shell for local inspection commands and edits.
 Do not install dependencies or call external APIs.
 When searching the workspace, exclude sog-trace.jsonl and other generated trace/log files.
@@ -22,8 +21,16 @@ Concrete fixture requirements:
 - Add ColorMenu to packages/react-instantsearch/src/widgets/__tests__/__utils__/all-widgets.tsx.
 - Create packages/vue-instantsearch/src/components/ColorMenu.vue.
 - Export AisColorMenu from packages/vue-instantsearch/src/widgets.js.
-- Add tests/common/widgets/color-menu/default.ts.
+- Add tests/common/widgets/color-menu/default.ts following the neighboring search-box fixture format. Test labels may use color-menu; no extra widget-name constant is required.
 - Register color-menu in each common-widgets.test file.
 - Replace the Vue placeholder that says color-menu is not supported.
 - Validate with: node scripts/check-port-widget.js
 
+This minimal fixture uses static smoke checks for file presence and source wiring. Its common-test arrays are fixture metadata, not executable behavior tests. Checker success does not prove runtime behavior or type correctness. Keep the React useColorMenu hook backed by the existing connectColorMenu implementation; a fixed empty-state placeholder is not an implementation of this port.
+
+Validation scope for the compiled workflow:
+- G000 performs the initial coverage audit and read-only exploration needed to plan context.
+- G001-G005 perform only the inspection and changes required by their assigned implementation goal. Creating or registering tests is implementation work; running them is validation.
+- Reserve all test runs, builds, type checks, checker scripts, repeated coverage audits, and post-edit sanity checks for G006 (Validate the complete port). Do not add a validation round to an implementation goal.
+- Read files when needed to understand or make a change, but do not reread them merely to verify your own edits. After the required changes succeed, end the implementation goal and summarize the changes and any concerns for G006.
+- G006 validates the combined result, including node scripts/check-port-widget.js, and handles any failures it finds.
