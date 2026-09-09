@@ -32,3 +32,15 @@ workspace path such as `/workspace`.
 When a backend depends on host services such as FUSE or containerd, keep ordinary
 unit tests focused on pure command rendering, access logs, and state updates.
 Put tests requiring real host services behind explicit flags or smoke commands.
+
+## Experiment Reporting
+
+After every completed skill experiment, inspect the trace and produce a
+`Goal \ Read/Write` table. For each goal, report the read and write round counts
+and their elapsed times, together with the goal wall time. Include the concrete
+work represented by each goal when comparing different execution strategies.
+
+For a serial baseline that was not actually executed with goal boundaries,
+clearly mark the result as a post-hoc mapping. Keep shared exploration rounds
+and startup or scheduling overhead separate instead of silently assigning them
+to a goal. Report the experiment wall time alongside the table.

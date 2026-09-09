@@ -27,6 +27,10 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self.send_text(INDEX_HTML, "text/html; charset=utf-8")
+        elif parsed.path == "/goals":
+            self.send_text(GOALS_HTML, "text/html; charset=utf-8")
+        elif parsed.path == "/timeline":
+            self.send_text(TIMELINE_HTML, "text/html; charset=utf-8")
         elif parsed.path == "/api/runs":
             self.send_json(list_runs())
         elif parsed.path == "/api/trace":
@@ -443,6 +447,9 @@ INDEX_HTML = r"""<!doctype html>
 
     function eventToMessage(timestamp, event) {
       const type = event.type || "unknown";
+      if (type === "user_message") {
+        return { role: "user", kind: type, timestamp, title: "user", body: event.content || "" };
+      }
       if (type === "assistant_message") {
         return { role: "assistant", kind: type, timestamp, title: "assistant", body: event.content || "(empty)" };
       }
@@ -541,6 +548,531 @@ INDEX_HTML = r"""<!doctype html>
     function escapeAttr(value) {
       return escapeHtml(value).replace(/`/g, "&#96;");
     }
+  </script>
+</body>
+</html>
+"""
+
+
+GOALS_HTML = r"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SeaOfGoals Goal Comparison</title>
+  <style>
+    :root { color-scheme: dark; --bg:#111315; --panel:#1b1f24; --panel2:#232830; --line:#39414b; --text:#e6e8eb; --muted:#9aa4af; --serial:#d6a23f; --preload:#64cdb4; --assistant:#9bbcff; --tool:#d4a1ef; --result:#b8c4cf; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:13px/1.45 ui-sans-serif,system-ui,sans-serif; }
+    header { position:sticky; top:0; z-index:3; display:flex; gap:14px; align-items:center; padding:11px 16px; background:var(--bg); border-bottom:1px solid var(--line); }
+    h1 { margin:0; font-size:17px; } button,select { color:var(--text); background:var(--panel2); border:1px solid var(--line); border-radius:4px; padding:6px 8px; font:inherit; }
+    button { cursor:pointer; } .controls { display:flex; gap:10px; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid var(--line); }
+    .controls label { display:flex; gap:7px; align-items:center; color:var(--muted); } .muted { color:var(--muted); }
+    main { padding:14px 16px 40px; } .goal { margin:0 auto 18px; max-width:1800px; border:1px solid var(--line); background:var(--panel); }
+    .goal-head { padding:10px 13px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:baseline; }
+    .goal-id { font-weight:700; color:#fff; } .goal-name { font-weight:650; } .goal-desc { margin-left:auto; color:var(--muted); max-width:55%; text-align:right; }
+    .columns { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:1px; background:var(--line); }
+    .column { min-width:0; background:var(--bg); padding:10px; } .column-head { display:flex; justify-content:space-between; align-items:baseline; border-bottom:2px solid; padding:0 2px 7px; margin-bottom:8px; font-weight:700; }
+    .serial .column-head { color:var(--serial); border-color:var(--serial); } .preload .column-head { color:var(--preload); border-color:var(--preload); }
+    .event { border-left:3px solid var(--line); margin:0 0 8px; padding:7px 9px; background:var(--panel); min-width:0; }
+    .event.assistant_message { border-color:var(--assistant); } .event.tool_call { border-color:var(--tool); } .event.tool_result { border-color:var(--result); }
+    .event-top { display:flex; gap:8px; justify-content:space-between; color:var(--muted); font-size:12px; } .event-title { color:var(--text); font-weight:650; }
+    pre { margin:6px 0 0; white-space:pre-wrap; overflow-wrap:anywhere; font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; color:#d8dde3; max-height:420px; overflow:auto; }
+    details > summary { cursor:pointer; color:var(--muted); margin-top:5px; } .empty { color:var(--muted); padding:12px 2px; }
+    @media (max-width:800px) { .columns { grid-template-columns:1fr; } .goal-desc { display:none; } }
+  </style>
+</head>
+<body>
+  <header><h1>Goal comparison</h1><button id="refresh">Refresh</button><a href="/timeline" class="muted">timeline</a><a href="/" class="muted">history view</a></header>
+  <div class="controls">
+    <label>Serial <select id="serial"></select></label>
+    <label>Preload <select id="preload"></select></label>
+    <span id="status" class="muted"></span>
+  </div>
+  <main id="content"><div class="empty">Loading runs...</div></main>
+  <script>
+    const state = { runs: [], traces: {}, selected: {} };
+    document.getElementById("refresh").addEventListener("click", () => { state.traces = {}; loadRuns(); });
+    document.getElementById("serial").addEventListener("change", loadSelected);
+    document.getElementById("preload").addEventListener("change", loadSelected);
+    loadRuns();
+
+    async function loadRuns() {
+      const response = await fetch("/api/runs"); const payload = await response.json();
+      state.runs = (payload.runs || []).filter((run) => run.experiment === "port-widget");
+      const serial = state.runs.filter((run) => run.run.includes("serial-sog"));
+      const preload = state.runs.filter((run) => run.run.includes("preload-context"));
+      fill("serial", serial, state.selected.serial || (serial[0] && serial[0].id));
+      fill("preload", preload, state.selected.preload || (preload[0] && preload[0].id));
+      await loadSelected();
+    }
+    function fill(id, runs, selected) {
+      document.getElementById(id).innerHTML = runs.map((run) => `<option value="${attr(run.id)}">${html(run.run)}</option>`).join("");
+      if (selected) document.getElementById(id).value = selected;
+    }
+    async function loadSelected() {
+      state.selected.serial = document.getElementById("serial").value; state.selected.preload = document.getElementById("preload").value;
+      await Promise.all([load(state.selected.serial), load(state.selected.preload)]); render();
+    }
+    async function load(id) { if (!id || state.traces[id]) return; state.traces[id] = await (await fetch(`/api/trace?id=${encodeURIComponent(id)}`)).json(); }
+    function render() {
+      const serial = state.traces[state.selected.serial], preload = state.traces[state.selected.preload]; if (!serial || !preload) return;
+      const left = groupSerial(serial.events || []), right = groupGoals(preload.events || []); const ids = [...new Set([...Object.keys(left), ...Object.keys(right)])].filter((x) => /^G\d+$/.test(x)).sort((a,b) => Number(a.slice(1))-Number(b.slice(1)));
+      document.getElementById("status").textContent = `${ids.length} goals · serial ${short(serial.id)} · preload ${short(preload.id)}`;
+      document.getElementById("content").innerHTML = ids.map((id) => renderGoal(id, left[id] || [], right[id] || [])).join("");
+    }
+    function groupGoals(records) {
+      const groups = {}; let active = "";
+      for (const record of records) { const e = record.event || {}; const id = e.active_subgoal || e.subgoal_id || active; if (e.type === "subgoal_started") active = e.subgoal_id; if (e.type === "subgoal_ended") active = e.subgoal_id; if (/^G\d+$/.test(id || "")) (groups[id] ||= []).push(record); }
+      return groups;
+    }
+    function groupSerial(records) {
+      const groups = {}; const usage = records.map((r,i) => [i,r]).filter(([,r]) => (r.event || {}).type === "model_usage");
+      const mapping = {1:"G000",2:"G000",3:"G000",4:"G000",5:"G002",6:"shared",7:"G003",8:"G003",9:"G004",10:"G006",11:"G007",12:"G007",13:"G007",14:"G007"};
+      usage.forEach(([i], n) => { const id = mapping[n+1] || "shared"; const end = usage[n+1] ? usage[n+1][0] : records.length; (groups[id] ||= []).push(...records.slice(n ? usage[n-1][0] : 0, end)); });
+      return groups;
+    }
+    function renderGoal(id, serial, preload) {
+      const name = goalName(id, preload.concat(serial));
+      return `<section class="goal"><div class="goal-head"><span class="goal-id">${html(id)}</span><span class="goal-name">${html(name)}</span><span class="goal-desc">serial rounds ${roundCount(serial)} · preload rounds ${roundCount(preload)}</span></div><div class="columns">${column("serial", serial, "Serial baseline")}${column("preload", preload, "Preload")}</div></section>`;
+    }
+    function column(kind, records, title) { return `<div class="column ${kind}"><div class="column-head"><span>${title}</span><span>${records.length} events</span></div>${records.length ? records.map(renderEvent).join("") : `<div class="empty">No mapped events.</div>`}</div>`; }
+    function renderEvent(record) { const e=record.event||{}; const type=e.type||"unknown"; return `<article class="event ${attr(type)}"><div class="event-top"><span class="event-title">${html(label(e))}</span><span>${html(time(record.timestamp))}</span></div>${body(e)}</article>`; }
+    function body(e) { const value=eventBody(e); if (!value) return ""; return `<details><summary>View details</summary><pre>${html(value)}</pre></details>`; }
+    function label(e) { if(e.type==="assistant_message") return "agent text"; if(e.type==="tool_call") return e.tool_name==="shell" ? `shell · ${shellCommand(e)}` : `tool call · ${e.tool_name||"?"}`; if(e.type==="tool_result") return `tool result · ${e.tool_name||"?"}`; if(e.type==="harness_started") return "system / goal prompt"; if(e.type==="subgoal_started") return `begin · ${e.subgoal_id||""}`; if(e.type==="subgoal_ended") return `end · ${e.status||""}`; return e.type||"event"; }
+    function shellCommand(e) { return String((e.arguments||{}).command||"").split("\\n")[0]; }
+    function eventBody(e) { if(e.type==="assistant_message"||e.type==="user_message"||e.type==="harness_started") return e.content||e.prompt||e.system_prompt||""; if(e.type==="tool_call") { const a=e.arguments||{}; return e.tool_name==="shell" ? `$ ${a.command||""}` : JSON.stringify(a,null,2); } if(e.type==="tool_result") return e.result||""; if(e.type==="subgoal_ended") return e.summary||""; return ""; }
+    function goalName(id, records) { const e=records.find((r)=>(r.event||{}).type==="subgoal_started" && (r.event||{}).subgoal_id===id); return e ? e.event.subgoal_name : ""; }
+    function roundCount(records) { return new Set(records.filter((r)=>(r.event||{}).type==="model_usage").map((r)=>r.timestamp)).size; }
+    function short(id) { return String(id||"").split("/").slice(-2,-1)[0] || id; }
+    function time(v) { return new Date(v).toISOString().replace(/.*T/,"").replace(/\\..*/,""); }
+    function html(v) { return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+    function attr(v) { return html(v).replace(/`/g,"&#96;"); }
+  </script>
+</body>
+</html>
+"""
+
+TIMELINE_HTML = r"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SeaOfGoals Timeline</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #111315;
+      --panel: #181b1f;
+      --panel-2: #20242a;
+      --text: #e6e8eb;
+      --muted: #9aa4af;
+      --line: #343a43;
+      --accent: #4aa3ff;
+      --serial: #d6a23f;
+      --concurrent: #61c7a8;
+      --tool: #c792ea;
+      --bad: #e06c75;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 13px/1.4 ui-sans-serif, system-ui, sans-serif;
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 4;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 11px 16px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(17, 19, 21, .96);
+    }
+    h1 { margin: 0; font-size: 16px; }
+    select, button {
+      color: var(--text);
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 6px 8px;
+      font: inherit;
+    }
+    button { cursor: pointer; }
+    .muted { color: var(--muted); }
+    .legend { margin-left: auto; display: flex; gap: 14px; color: var(--muted); }
+    .legend span::before {
+      content: "";
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      margin-right: 5px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+    .legend .serial::before { background: var(--serial); }
+    .legend .concurrent::before { background: var(--concurrent); }
+    .controls { padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+    .controls {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+      gap: 8px 14px;
+      align-items: center;
+    }
+    .controls label { display: flex; min-width: 0; align-items: center; gap: 8px; color: var(--muted); }
+    .controls select { width: 100%; min-width: 0; max-width: none; }
+    .controls label:last-of-type { white-space: nowrap; }
+    .controls #status { white-space: nowrap; }
+    .timeline-scroll { overflow: auto; }
+    .timeline {
+      position: relative;
+      min-width: 1040px;
+      padding: 18px 26px 60px;
+    }
+    .axis {
+      display: none;
+    }
+    .lane {
+      position: absolute;
+      top: 18px;
+      bottom: 60px;
+      width: calc(50% - 32px);
+      overflow: visible;
+    }
+    .lane.serial { left: 26px; padding-right: 24px; }
+    .lane.concurrent { right: 26px; padding-left: 24px; }
+    .lane-head {
+      position: absolute;
+      top: -12px;
+      left: 24px;
+      right: 0;
+      z-index: 2;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-top: 3px solid var(--accent);
+      background: var(--panel-2);
+      font-weight: 700;
+    }
+    .lane-head .muted {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .lane.serial .lane-head { left: 0; right: 24px; border-top-color: var(--serial); }
+    .lane.concurrent .lane-head { border-top-color: var(--concurrent); }
+    .connections {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      overflow: visible;
+    }
+    .connection {
+      stroke: var(--line);
+      stroke-width: 1;
+    }
+    .connection-point {
+      fill: var(--panel-2);
+      stroke: var(--accent);
+      stroke-width: 2;
+    }
+    .serial .connection-point { stroke: var(--serial); }
+    .concurrent .connection-point { stroke: var(--concurrent); }
+    .event-list {
+      position: absolute;
+      top: 48px;
+      left: 54px;
+      right: 0;
+      bottom: 0;
+    }
+    .serial .event-list {
+      left: 0;
+      right: 54px;
+    }
+    .event-card {
+      position: absolute;
+      left: 0;
+      right: 0;
+      height: 28px;
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      border-left: 3px solid var(--accent);
+      border-radius: 3px;
+      background: var(--panel-2);
+      color: var(--muted);
+      text-align: left;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      cursor: pointer;
+    }
+    .serial .event-card { border-left-color: var(--serial); }
+    .serial .event-card { border-left: 0; border-right: 3px solid var(--serial); }
+    .concurrent .event-card { border-left-color: var(--concurrent); }
+    .event-card.tool_call { border-left-color: var(--tool); }
+    .event-card.subgoal_started, .event-card.subgoal_ended { border-left-color: var(--concurrent); }
+    .event-card.dag_snapshot { opacity: .72; }
+    .event-card:hover, .event-card.selected { z-index: 3; color: var(--text); background: #2a3038; }
+    .event-label {
+      display: inline-block;
+      max-width: calc(100% - 54px);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font: 10px ui-monospace, monospace;
+      pointer-events: none;
+    }
+    .event-time {
+      float: right;
+      color: var(--muted);
+      font: 10px ui-monospace, monospace;
+    }
+    .inspector {
+      position: fixed;
+      z-index: 5;
+      display: none;
+      width: min(620px, calc(100vw - 36px));
+      max-height: 38vh;
+      padding: 10px 12px;
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      background: #20242af2;
+      box-shadow: 0 8px 24px #0008;
+    }
+    .inspector.visible { display: block; }
+    .inspector-head { display: flex; gap: 8px; font-weight: 700; }
+    .inspector-time { color: var(--muted); font: 11px ui-monospace, monospace; }
+    .inspector pre { max-height: 28vh; margin-top: 7px; white-space: pre-wrap; overflow: auto; font: 11px/1.4 ui-monospace, monospace; }
+    .empty { padding: 28px; color: var(--muted); }
+    @media (max-width: 800px) {
+      .controls { grid-template-columns: 1fr; }
+      .legend { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>port-widget timeline</h1>
+    <button id="refresh">Refresh</button>
+    <a href="/" class="muted">history view</a>
+    <a href="/goals" class="muted">goal comparison</a>
+    <div class="legend"><span class="serial">serial baseline</span><span class="concurrent">SoG concurrent</span></div>
+  </header>
+  <div class="controls">
+    <label>Serial <select id="serial"></select></label>
+    <label>Concurrent <select id="concurrent"></select></label>
+    <label><input id="internals" type="checkbox"> show model usage / reasoning</label>
+    <span id="status" class="muted"></span>
+  </div>
+  <div id="inspector" class="inspector"></div>
+  <div id="content" class="empty">Loading runs...</div>
+  <script>
+    const state = { runs: [], traces: {}, selected: {}, zoom: 1, pointers: new Map(), pinchDistance: null };
+    const content = document.getElementById("content");
+    document.getElementById("refresh").addEventListener("click", loadRuns);
+    document.getElementById("serial").addEventListener("change", loadSelected);
+    document.getElementById("concurrent").addEventListener("change", loadSelected);
+    document.getElementById("internals").addEventListener("change", render);
+    content.addEventListener("wheel", handleTrackpadZoom, { passive: false });
+    content.addEventListener("pointerdown", handlePointerDown);
+    content.addEventListener("pointermove", handlePointerMove);
+    content.addEventListener("pointerup", handlePointerEnd);
+    content.addEventListener("pointercancel", handlePointerEnd);
+    loadRuns();
+
+    async function loadRuns() {
+      const response = await fetch("/api/runs");
+      const payload = await response.json();
+      state.runs = (payload.runs || []).filter((run) => run.experiment === "port-widget");
+      const serial = state.runs.filter((run) => run.run.includes("serial-sog"));
+      const concurrent = state.runs.filter((run) => run.run.includes("concurrent-sog"));
+      fillSelect("serial", serial, state.selected.serial || (serial[0] && serial[0].id));
+      fillSelect("concurrent", concurrent, state.selected.concurrent || (concurrent[0] && concurrent[0].id));
+      state.selected.serial = document.getElementById("serial").value;
+      state.selected.concurrent = document.getElementById("concurrent").value;
+      await loadSelected();
+    }
+
+    function fillSelect(id, runs, selected) {
+      document.getElementById(id).innerHTML = runs.map((run) => `<option value="${escapeAttr(run.id)}">${escapeHtml(run.run)}</option>`).join("");
+      if (selected) document.getElementById(id).value = selected;
+    }
+
+    async function loadSelected() {
+      state.selected.serial = document.getElementById("serial").value;
+      state.selected.concurrent = document.getElementById("concurrent").value;
+      await Promise.all([loadTrace(state.selected.serial), loadTrace(state.selected.concurrent)]);
+      render();
+    }
+
+    async function loadTrace(id) {
+      if (!id || state.traces[id]) return;
+      const response = await fetch(`/api/trace?id=${encodeURIComponent(id)}`);
+      state.traces[id] = await response.json();
+    }
+
+    function render() {
+      const serial = state.traces[state.selected.serial];
+      const concurrent = state.traces[state.selected.concurrent];
+      if (!serial || !concurrent) return;
+      const serialEvents = visibleEvents(serial.events || []);
+      const concurrentEvents = visibleEvents(concurrent.events || []);
+      const normalizedSerial = normalizeEvents(serialEvents);
+      const normalizedConcurrent = normalizeEvents(concurrentEvents);
+      const all = normalizedSerial.concat(normalizedConcurrent);
+      const duration = Math.max(...all.map((item) => item.elapsed));
+      const scale = state.zoom;
+      const rowHeight = 34;
+      const height = Math.max(720, duration / 1000 * scale + 120, Math.max(normalizedSerial.length, normalizedConcurrent.length) * rowHeight + 100);
+      document.getElementById("status").textContent = `${formatDuration(duration)} normalized time range`;
+      document.getElementById("content").innerHTML = `<div class="timeline-scroll"><div class="timeline" style="height:${height}px"><div class="axis"></div>${renderLane("serial", serial, normalizedSerial, scale, rowHeight)}${renderLane("concurrent", concurrent, normalizedConcurrent, scale, rowHeight)}</div></div>`;
+      document.querySelectorAll(".event-card").forEach((marker) => {
+        marker.addEventListener("mouseenter", (event) => showInspector(marker.dataset.event, event));
+        marker.addEventListener("mousemove", (event) => positionInspector(event.clientX, event.clientY));
+        marker.addEventListener("mouseleave", hideInspector);
+      });
+    }
+
+    function normalizeEvents(records) {
+      if (!records.length) return [];
+      const start = Date.parse(records[0].timestamp);
+      return records.map((record) => ({ ...record, elapsed: Date.parse(record.timestamp) - start }));
+    }
+
+    function visibleEvents(records) {
+      const internals = document.getElementById("internals").checked;
+      const hidden = new Set(internals ? [] : ["model_usage", "reasoning_observed"]);
+      return records.filter((record) => !hidden.has((record.event || {}).type));
+    }
+
+    function renderLane(kind, trace, records, scale, rowHeight) {
+      const axisX = kind === "serial" ? "96%" : "4%";
+      const eventX = kind === "serial" ? "88%" : "12%";
+      let previousEventTop = -rowHeight;
+      const positions = records.map((record, index) => {
+        const timeTop = Math.max(0, record.elapsed / 1000 * scale);
+        const eventTop = Math.max(index * rowHeight, timeTop, previousEventTop + rowHeight);
+        previousEventTop = eventTop;
+        return { record, eventTop };
+      });
+      const points = positions.map(({ record, eventTop }) => {
+        const event = record.event || {};
+        const y = Math.max(48, record.elapsed / 1000 * scale + 48);
+        return `<line class="connection" x1="${axisX}" y1="${y}" x2="${eventX}" y2="${48 + eventTop + 14}"/><circle class="connection-point" cx="${axisX}" cy="${y}" r="4"/>`;
+      }).join("");
+      const events = positions.map(({ record, eventTop }) => {
+        const event = record.event || {};
+        const goal = event.active_subgoal || event.subgoal_id || "";
+        const title = `${goal ? `${goal} · ` : ""}${eventLabel(event)}`;
+        return `<button class="event-card ${escapeAttr(event.type || "unknown")}" style="top:${eventTop}px" data-event="${escapeAttr(JSON.stringify({ record, lane: kind }))}" title="${escapeAttr(title)}"><span class="event-label">${escapeHtml(title)}</span><span class="event-time">+${escapeHtml(formatDuration(record.elapsed))}</span></button>`;
+      }).join("");
+      const run = shortRunName(trace.id || "");
+      return `<section class="lane ${kind}"><svg class="connections" aria-hidden="true">${points}</svg><div class="lane-head">${kind === "serial" ? "Serial baseline" : "SoG concurrent"}<div class="muted">${escapeHtml(run)}</div></div><div class="event-list">${events}</div></section>`;
+    }
+
+    function shortRunName(id) {
+      const directory = String(id).split("/").slice(-2, -1)[0] || id;
+      return directory.split("--").slice(-3).join(" · ");
+    }
+
+    function showInspector(encoded, pointer) {
+      const data = JSON.parse(encoded);
+      const event = data.record.event || {};
+      const inspector = document.getElementById("inspector");
+      inspector.classList.add("visible");
+      inspector.innerHTML = `<div class="inspector-head"><span>${escapeHtml(data.lane)} · ${escapeHtml(eventLabel(event))}</span><span class="inspector-time">+${formatDuration(data.record.elapsed)}</span></div><pre>${escapeHtml(eventBody(event))}</pre>`;
+      positionInspector(pointer.clientX, pointer.clientY);
+    }
+
+    function positionInspector(x, y) {
+      const inspector = document.getElementById("inspector");
+      if (!inspector.classList.contains("visible")) return;
+      const margin = 14;
+      const bounds = inspector.getBoundingClientRect();
+      const left = Math.min(x + margin, window.innerWidth - bounds.width - margin);
+      const top = Math.min(y + margin, window.innerHeight - bounds.height - margin);
+      inspector.style.left = `${Math.max(margin, left)}px`;
+      inspector.style.top = `${Math.max(margin, top)}px`;
+    }
+
+    function hideInspector() {
+      document.getElementById("inspector").classList.remove("visible");
+    }
+
+    function handleTrackpadZoom(event) {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      state.zoom *= Math.exp(-event.deltaY * 0.01);
+      render();
+    }
+
+    function handlePointerDown(event) {
+      state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (state.pointers.size === 2) state.pinchDistance = currentPinchDistance();
+    }
+
+    function handlePointerMove(event) {
+      if (!state.pointers.has(event.pointerId)) return;
+      state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (state.pointers.size !== 2 || !state.pinchDistance) return;
+      const distance = currentPinchDistance();
+      state.zoom *= distance / state.pinchDistance;
+      state.pinchDistance = distance;
+      event.preventDefault();
+      render();
+    }
+
+    function handlePointerEnd(event) {
+      state.pointers.delete(event.pointerId);
+      state.pinchDistance = state.pointers.size === 2 ? currentPinchDistance() : null;
+    }
+
+    function currentPinchDistance() {
+      const points = Array.from(state.pointers.values());
+      return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+    }
+
+    function eventLabel(event) {
+      if (event.type === "assistant_message") return "agent text";
+      if (event.type === "harness_started") return "system prompt";
+      if (event.type === "tool_call") return toolCallLabel(event);
+      if (event.type === "tool_result") return `result · ${event.tool_name || "?"}`;
+      if (event.type === "subgoal_started") return `begin · ${event.subgoal_id || "?"}`;
+      if (event.type === "subgoal_ended") return `end · ${event.status || ""}`;
+      if (event.type === "dag_snapshot") return `DAG · ${event.phase || ""}`;
+      return event.type || "unknown";
+    }
+
+    function toolCallLabel(event) {
+      const name = event.tool_name || "?";
+      const args = event.arguments || {};
+      if (name === "shell" && args.command) return `shell · ${args.command.split("\\n")[0]}`;
+      if (name === "write_file" && args.path) return `write_file · ${args.path}`;
+      return `tool · ${name}`;
+    }
+
+    function eventBody(event) {
+      if (event.type === "assistant_message" || event.type === "user_message") return event.content || "";
+      if (event.type === "tool_call") {
+        const args = event.arguments || {};
+        if (event.tool_name === "shell" && args.command) return `$ ${args.command}`;
+        if (event.tool_name === "write_file" && args.path) return `path: ${args.path}\n\ncontent:\n${args.content || ""}`;
+        return JSON.stringify(args, null, 2);
+      }
+      if (event.type === "tool_result") return event.result || "";
+      if (event.type === "subgoal_ended") return event.summary || "";
+      if (event.type === "effect_recorded") return JSON.stringify(event.effect || {});
+      if (event.type === "dag_snapshot") return `${(event.running || []).join(", ")} | completed: ${(event.completed || []).join(", ")}`;
+      return JSON.stringify(event);
+    }
+
+    function shortTime(value) { return new Date(value).toISOString().slice(11, 19); }
+    function formatDuration(ms) { return `${(ms / 1000).toFixed(1)}s`; }
+    function escapeHtml(value) { return String(value).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch])); }
+    function escapeAttr(value) { return escapeHtml(value).replace(/`/g, "&#96;"); }
   </script>
 </body>
 </html>
