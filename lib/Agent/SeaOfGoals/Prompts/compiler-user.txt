@@ -1,6 +1,7 @@
 Skill name: {{skill_name}}
 
 Compile the following raw skill into a scheduling DAG.
+Return only a JSON object matching the schema in the system instructions.
 The execution agent will still receive the full skill text as policy background,
 so goal_entering_prompt should focus on the current goal boundary and task focus.
 

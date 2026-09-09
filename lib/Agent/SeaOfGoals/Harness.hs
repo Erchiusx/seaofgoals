@@ -27,8 +27,7 @@ import Agent.SeaOfGoals.Trace
   ( HarnessEvent (..)
   )
 import Agent.SeaOfGoals.Workflow
-  ( WorkflowNode (..)
-  , WorkflowSpec (..)
+  ( WorkflowSpec
   , WorkflowStatus
   , emptyWorkflowStatus
   , updateWorkflowStatus
@@ -38,8 +37,6 @@ import Control.Concurrent.Async
   ( forConcurrently
   )
 import Data.Aeson qualified as Aeson
-import Data.Aeson.Key qualified as AesonKey
-import Data.Aeson.KeyMap qualified as AesonKeyMap
 import Data.Foldable (toList)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
@@ -57,23 +54,41 @@ data HarnessConfig provider = HarnessConfig
   , harnessMaxTurns :: Int
   , harnessEventSink :: HarnessEvent -> IO ()
   , harnessWorkflowSpec :: Maybe WorkflowSpec
+  , harnessRequiredSubgoal :: Maybe (Text, Text)
   }
 
 data HarnessState = HarnessState
   { harnessHistory :: [LLMInputItem]
   , harnessActiveSubgoal :: Maybe Text
   , harnessWorkflowStatus :: WorkflowStatus
+  , harnessSubgoalResults :: Map.Map Text (Text, Maybe Text)
   }
   deriving stock (Eq, Show)
 
 runHarness :: LLM provider => HarnessConfig provider -> IO HarnessState
 runHarness config = do
-  harnessEventSink config (HarnessStarted (harnessUserPrompt config))
+  harnessEventSink
+    config
+    (HarnessStarted (harnessUserPrompt config) (harnessSystemPrompt config))
+  mapM_ (harnessEventSink config) startEvents
+  if null startEvents
+    then pure ()
+    else
+      harnessEventSink
+        config
+        (workflowStatusEvent (harnessWorkflowStatus initialState))
   loop
     (max 1 (harnessMaxTurns config))
     initialState
  where
   toolMap = Map.fromList [(toolName tool, tool) | tool <- harnessTools config]
+
+  requiredGoalId = fst <$> harnessRequiredSubgoal config
+  startEvents =
+    maybe
+      []
+      (\(goalId, name) -> [SubgoalStarted goalId name])
+      (harnessRequiredSubgoal config)
 
   initialState =
     HarnessState
@@ -90,11 +105,19 @@ runHarness config = do
                 }
           ]
             <> harnessInitialHistorySuffix config
-      , harnessActiveSubgoal = Nothing
-      , harnessWorkflowStatus = emptyWorkflowStatus
+      , harnessActiveSubgoal = requiredGoalId
+      , harnessWorkflowStatus =
+          foldl
+            (updateWorkflowStatus (harnessWorkflowSpec config))
+            emptyWorkflowStatus
+            startEvents
+      , harnessSubgoalResults = Map.empty
       }
 
   loop turnsLeft state
+    | goalEnded state = do
+        harnessEventSink config (HarnessFinished "subgoal_ended")
+        pure state
     | turnsLeft <= 0 = do
         harnessEventSink config (HarnessFinished "max_turns_reached")
         pure state
@@ -121,17 +144,53 @@ runHarness config = do
       responseReasoningItems response
     let nextHistory = harnessHistory state <> responseOutput response
     if null (responseToolCalls response)
-      then do
-        harnessEventSink
-          config
-          (HarnessFinished (fromMaybe "assistant_finished" (responseFinishReason response)))
-        pure state{harnessHistory = nextHistory}
+      then case requiredGoalId of
+        Just goalId -> do
+          let reminder =
+                "Finish goal "
+                  <> goalId
+                  <> " by calling end_goal with its id and status (success, failed, skipped, or blocked). Include a summary only when the current workflow requires one. A text-only reply does not complete this goal."
+          harnessEventSink config (UserMessageObserved reminder)
+          loop
+            (turnsLeft - 1)
+            state
+              { harnessHistory =
+                  nextHistory <> [MessageInput (LLMMessage User [TextPart reminder])]
+              }
+        Nothing -> do
+          harnessEventSink
+            config
+            (HarnessFinished (fromMaybe "assistant_finished" (responseFinishReason response)))
+          pure state{harnessHistory = nextHistory}
       else do
         stateAfterTools <-
           runToolCalls state{harnessHistory = nextHistory} (responseToolCalls response)
         loop (turnsLeft - 1) stateAfterTools
 
   runToolCalls state [] = pure state
+  runToolCalls state calls | goalEnded state = do
+    let results =
+          [ ToolResult
+              (toolCallId call)
+              (Just (toolCallName call))
+              [TextPart "Not executed: the required goal has ended."]
+          | call <- calls
+          ]
+    mapM_ (emitToolCallObserved (harnessActiveSubgoal state)) calls
+    mapM_
+      ( \result ->
+          harnessEventSink
+            config
+            ( ToolResultObserved
+                (toolResultCallId result)
+                (fromMaybe "" (toolResultName result))
+                "Not executed: the required goal has ended."
+                (harnessActiveSubgoal state)
+            )
+      )
+      results
+    pure
+      state{harnessHistory = harnessHistory state <> fmap ToolResultInput results}
   runToolCalls state toolCalls =
     case span (not . isWorkflowBarrierTool) toolCalls of
       ([], barrier : rest) -> do
@@ -144,10 +203,7 @@ runHarness config = do
   runParallelToolCalls state toolCalls = do
     let
       activeSubgoal = harnessActiveSubgoal state
-      effectiveToolCalls =
-        fmap
-          (canonicalizeWorkflowToolCall (harnessWorkflowSpec config))
-          toolCalls
+      effectiveToolCalls = toolCalls
     mapM_
       (emitToolCallObserved activeSubgoal)
       effectiveToolCalls
@@ -178,13 +234,14 @@ runHarness config = do
               eventsWithActiveSubgoal
         , harnessWorkflowStatus =
             nextWorkflowStatus
+        , harnessSubgoalResults =
+            collectResults (harnessSubgoalResults state) eventsWithActiveSubgoal
         }
 
   runToolCall state toolCall = do
     let
       activeSubgoal = harnessActiveSubgoal state
-      effectiveToolCall =
-        canonicalizeWorkflowToolCall (harnessWorkflowSpec config) toolCall
+      effectiveToolCall = toolCall
     emitToolCallObserved activeSubgoal effectiveToolCall
     outcome <- runEffectiveToolCall activeSubgoal effectiveToolCall
     let
@@ -208,6 +265,8 @@ runHarness config = do
               eventsWithActiveSubgoal
         , harnessWorkflowStatus =
             nextWorkflowStatus
+        , harnessSubgoalResults =
+            collectResults (harnessSubgoalResults state) eventsWithActiveSubgoal
         }
 
   runEffectiveToolCall activeSubgoal effectiveToolCall =
@@ -224,15 +283,46 @@ runHarness config = do
             }
       Just tool -> do
         (result, events) <- runToolHandler tool effectiveToolCall
+        let invalidEnd =
+              any
+                ( \case
+                    SubgoalEnded goalId _ _ ->
+                      maybe
+                        False
+                        (\required -> goalId /= required || activeSubgoal /= Just required)
+                        requiredGoalId
+                    _ -> False
+                )
+                events
         let eventsWithActiveSubgoal =
-              fmap (attachActiveSubgoal activeSubgoal) events
+              if invalidEnd then [] else fmap (attachActiveSubgoal activeSubgoal) events
         pure
           ToolCallOutcome
             { toolCallOutcomeCall = effectiveToolCall
-            , toolCallOutcomeResult = result
+            , toolCallOutcomeResult =
+                if invalidEnd
+                  then
+                    result
+                      { toolResultContent =
+                          [ TextPart "end_goal must use the id of the goal already started by the harness."
+                          ]
+                      }
+                  else result
             , toolCallOutcomeEvents = eventsWithActiveSubgoal
             , toolCallOutcomeActiveSubgoal = activeSubgoal
             }
+
+  goalEnded state =
+    maybe
+      False
+      (`Map.member` harnessSubgoalResults state)
+      requiredGoalId
+  collectResults =
+    foldl
+      ( \results -> \case
+          SubgoalEnded goalId status summary -> Map.insert goalId (status, summary) results
+          _ -> results
+      )
 
   emitToolCallOutcome outcome = do
     let
@@ -289,8 +379,7 @@ usageObservedEvent usage =
 
 isWorkflowBarrierTool :: ToolCall -> Bool
 isWorkflowBarrierTool toolCall =
-  toolCallName toolCall == "begin_subgoal"
-    || toolCallName toolCall == "end_subgoal"
+  toolCallName toolCall == "end_goal"
 
 data ToolCallOutcome = ToolCallOutcome
   { toolCallOutcomeCall :: ToolCall
@@ -311,37 +400,6 @@ attachActiveSubgoal activeSubgoal event =
     EffectRecorded effect Nothing ->
       EffectRecorded effect activeSubgoal
     _ -> event
-
-canonicalizeWorkflowToolCall :: Maybe WorkflowSpec -> ToolCall -> ToolCall
-canonicalizeWorkflowToolCall maybeSpec toolCall
-  | toolCallName toolCall /= "begin_subgoal" = toolCall
-  | otherwise =
-      case (maybeSpec, toolCallArguments toolCall) of
-        (Just spec, Aeson.Object arguments) ->
-          case AesonKeyMap.lookup (AesonKey.fromText "id") arguments of
-            Just (Aeson.String subgoalId) ->
-              case workflowNodeTitleFor spec subgoalId of
-                Just title ->
-                  toolCall
-                    { toolCallArguments =
-                        Aeson.Object
-                          ( AesonKeyMap.insert
-                              (AesonKey.fromText "name")
-                              (Aeson.String title)
-                              arguments
-                          )
-                    }
-                Nothing -> toolCall
-            _ -> toolCall
-        _ -> toolCall
-
-workflowNodeTitleFor :: WorkflowSpec -> Text -> Maybe Text
-workflowNodeTitleFor spec subgoalId =
-  foldr matchNode Nothing (workflowNodes spec)
- where
-  matchNode node fallback
-    | workflowNodeId node == subgoalId = Just (workflowNodeTitle node)
-    | otherwise = fallback
 
 unknownToolResult :: ToolCall -> ToolResult
 unknownToolResult toolCall =

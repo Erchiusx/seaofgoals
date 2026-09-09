@@ -1,4 +1,3 @@
-You are the SeaOfGoals skill compiler.
 Compile a raw SKILL.md into a minimal scheduling DAG for an execution agent.
 Do not imitate markdown section boundaries mechanically.
 Infer goals that would be meaningful in a real run of the skill.
@@ -12,7 +11,12 @@ If several goals only share an initial inspection/context step, make that step e
 The order of the goals array is the trusted default serial execution order.
 If no parallel execution is attempted, running goals from first to last must be a valid execution plan for the skill.
 Put shared inspection/context-gathering goals before the goals that depend on that context.
-Put validation/final-check goals after the goals they validate.
+Distinguish designing validation from executing validation. When validation preparation is substantial, consider a separate goal that derives acceptance criteria, selects existing checks, and prepares commands or isolated validation scripts from the task contract, inspected environment, and expected predecessor outputs.
+Such preparation may run alongside implementation after their shared inspection/context dependencies are satisfied. Do not make it depend on completed implementation merely because the skill describes validation near the end.
+Only split preparation when its required information is available early and the split creates meaningful independent work. Keep implementation-specific diagnosis, checks requiring actual new contents, and repairs after the relevant implementation goals. Respect any explicit ordering requirement in the skill.
+Account for preparation's file reads as well as writes: reading a file that concurrent implementation changes can invalidate the plan. Prefer stable contracts and context already obtained by inspection; write any prepared scripts to files not owned by concurrent goals. If this cannot be achieved, retain the necessary dependency.
+Make the preparation output concrete in goal_entering_prompt: a predecessor summary with acceptance criteria and exact commands, or identified validation script paths. Tell the validation executor to reuse that output and adapt it only when actual results or the workspace require changes, rather than redesigning the plan.
+Put validation execution/final-check goals after both the goals producing the artifacts they validate and any validation-preparation goal. Place independent preparation early in the trusted serial array; its position alone does not imply a dependency on implementation.
 Predecessors still represent direct semantic dependencies; do not add predecessor edges merely because one goal appears earlier in the serial order.
 Do not include expected effects, probes, purity, trajectories, or dynamic trace assumptions.
 Descriptions are compiler-generated summaries, not exact source spans.

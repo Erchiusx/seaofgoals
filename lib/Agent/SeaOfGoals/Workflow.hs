@@ -111,9 +111,9 @@ renderWorkflowPrompt spec =
     , Text.unlines (fmap renderNode (workflowNodes spec))
     , "Edges:"
     , Text.unlines (fmap renderEdge (workflowEdges spec))
-    , "Use begin_subgoal with one of these exact node ids before executing that node."
-    , "Use end_subgoal with the same node id when the node is finished."
-    , "Do not echo AgentSanitizer begin/end markers; use the begin_subgoal and end_subgoal tools instead."
+    , "The harness selects and starts the current node; do not call a start tool."
+    , "Use end_goal with the same node id when the node is finished."
+    , "Do not echo AgentSanitizer begin/end markers; use end_goal to report completion instead."
     ]
  where
   renderNode node =

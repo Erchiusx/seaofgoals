@@ -21,9 +21,11 @@ import Agent.SeaOfGoals.Config
   , defaultConfig
   , loadConfigFile
   )
+import Agent.SeaOfGoals.ExperimentRunner qualified as Experiment
 import Agent.SeaOfGoals.GoalContextPreload
   ( GoalContextPreloadConfig (..)
   , PreloadedGoalContext (..)
+  , defaultGoalContextPreloadConfig
   , preloadGoalContext
   , preloadGoalContextDetailed
   , preloadGoalContextWithPlan
@@ -38,7 +40,7 @@ import Agent.SeaOfGoals.LLM
   ( LLM (..)
   , LLMContentPart (TextPart)
   , LLMError (LLMProviderError)
-  , LLMInputItem (ToolCallInput, ToolResultInput)
+  , LLMInputItem (MessageInput, ToolCallInput, ToolResultInput)
   , LLMMessage (..)
   , LLMRequest (..)
   , LLMResponse (..)
@@ -99,6 +101,7 @@ import Agent.SeaOfGoals.Scheduling.SerialScheduler
 import Agent.SeaOfGoals.Tools
   ( ToolSpec
   , objectToolSpec
+  , toolName
   )
 import Agent.SeaOfGoals.Trace
   ( EffectRecord (..)
@@ -202,6 +205,7 @@ import System.Directory
   , doesFileExist
   , getTemporaryDirectory
   , removePathForcibly
+  , renameFile
   )
 import System.Environment
   ( lookupEnv
@@ -248,6 +252,7 @@ main = do
         , harnessTools = testTools
         , harnessMaxTurns = 8
         , harnessEventSink = \event -> modifyIORef' eventsRef (event :)
+        , harnessRequiredSubgoal = Just ("S1", "tiny step")
         , harnessWorkflowSpec = Just testWorkflow
         }
   events <- reverse <$> readIORef eventsRef
@@ -268,7 +273,9 @@ main = do
     []
     (workflowTransitionWarnings (harnessWorkflowStatus finalState))
   assertBool "subgoal started" (any isSubgoalStarted events)
-  assertBool "subgoal name is canonicalized" (any isCanonicalSubgoalName events)
+  assertBool
+    "harness records the assigned goal name"
+    (any isAssignedGoalName events)
   assertBool "effect was assigned to active subgoal" (any isEffectForS1 events)
   assertBool "workflow status was observed" (any isWorkflowStatusForS1 events)
   assertBool "shell tool was called" (any (isToolCall "shell") events)
@@ -277,6 +284,8 @@ main = do
   assertBool "harness finished" (any isHarnessFinished events)
   putStrLn "Harness tool-call loop test passed."
   harnessParallelToolCallsTest
+  harnessRequiredGoalTest
+  harnessWithoutGoalTest
 
 unicodeTransportResponseBodyTest :: IO ()
 unicodeTransportResponseBodyTest = do
@@ -477,6 +486,89 @@ goalContextPreloadTest = do
     "preload plan records planned files as reads"
     (Set.fromList ["src/SearchBox.tsx"])
     (preloadedGoalContextReads plannedPreloaded)
+  let
+    futurePlan = Just ["src/Moved.tsx", "src/Created.tsx", "src/Missing.tsx"]
+    futureConfig = defaultGoalContextPreloadConfig{goalContextPreloadEnabled = True}
+  renameFile (root </> "src/SearchBox.tsx") (root </> "src/Moved.tsx")
+  ByteString.writeFile (root </> "src/Created.tsx") "export const Created = 2;\n"
+  futurePreloaded <-
+    preloadGoalContextWithPlanDetailed
+      futureConfig
+      futurePlan
+      root
+      "Validate merged results"
+  assertBool
+    "preload resolves created and moved files at goal entry"
+    ( all
+        (`Text.isInfixOf` preloadedGoalContextText futurePreloaded)
+        [ "BEGIN FILE src/Moved.tsx"
+        , "export const SearchBox"
+        , "BEGIN FILE src/Created.tsx"
+        , "export const Created"
+        ]
+    )
+  assertBool
+    "missing prediction is reported in synthetic tool history"
+    ( any
+        ( \case
+            ToolResultInput result ->
+              "[unavailable: planned file"
+                `Text.isInfixOf` Text.concat [content | TextPart content <- toolResultContent result]
+            _ -> False
+        )
+        (preloadedGoalContextHistory futurePreloaded)
+    )
+  assertEqual
+    "preload records missing read attempts as dependencies"
+    (Set.fromList ["src/Moved.tsx", "src/Created.tsx", "src/Missing.tsx"])
+    (preloadedGoalContextReads futurePreloaded)
+  let plannedPaths = ["src/Planned" <> show i <> ".ts" | i <- [1 .. 20 :: Int]]
+  mapM_
+    (\path -> ByteString.writeFile (root </> path) "export const value = 1;\n")
+    plannedPaths
+  completePlan <-
+    preloadGoalContextWithPlanDetailed
+      futureConfig
+      (Just plannedPaths)
+      root
+      "Validate"
+  assertEqual
+    "explicit preload plan is not truncated by the automatic file limit"
+    (Set.fromList plannedPaths)
+    (preloadedGoalContextReads completePlan)
+  assertBool
+    "every explicitly planned file reaches synthetic history"
+    ( all
+        ( \path ->
+            any
+              ( \case
+                  ToolResultInput result ->
+                    ("BEGIN FILE " <> Text.pack path <> "\n")
+                      `Text.isInfixOf` Text.concat [content | TextPart content <- toolResultContent result]
+                  _ -> False
+              )
+              (preloadedGoalContextHistory completePlan)
+        )
+        plannedPaths
+    )
+  automaticPlan <-
+    preloadGoalContextWithPlanDetailed futureConfig Nothing root "Planned"
+  assertEqual
+    "automatic preload selection still respects its file limit"
+    (goalContextPreloadMaxFiles futureConfig)
+    (Set.size (preloadedGoalContextReads automaticPlan))
+  unsafePreloaded <-
+    preloadGoalContextWithPlanDetailed
+      futureConfig
+      ( Just
+          ["../outside.ts", "/outside.ts", ".sog/private.ts", "node_modules/private.ts"]
+      )
+      root
+      "Validate"
+  assertEqual
+    "planned paths stay inside permitted workspace sources"
+    Set.empty
+    (preloadedGoalContextReads unsafePreloaded)
   disabledRendered <-
     preloadGoalContext
       GoalContextPreloadConfig
@@ -1576,6 +1668,146 @@ sandboxedToolCallTest = do
             <> show (sandboxedToolRequest parsed)
         )
 
+harnessRequiredGoalTest :: IO ()
+harnessRequiredGoalTest = mapM_ check ["success", "blocked"]
+ where
+  check status = do
+    eventsRef <- newIORef []
+    let
+      call name args = ToolCall name name (object args)
+      trailing = call "unexpected" []
+      done =
+        call
+          "end_goal"
+          [ "id" .= ("S1" :: Text)
+          , "status" .= status
+          , "summary" .= ("Run node check.js; preserve baseline abc123." :: Text)
+          ]
+      wrong =
+        call
+          "end_goal"
+          [ "id" .= ("other" :: Text)
+          , "status" .= status
+          , "summary" .= ("Wrong goal" :: Text)
+          ]
+      textOnly =
+        (responseWithToolCalls [])
+          { responseMessage = assistantMessage "Finished the plan."
+          }
+    provider@(FakeProvider remainingRef) <-
+      newFakeProvider
+        [ textOnly
+        , responseWithToolCall wrong
+        , responseWithToolCalls [done, trailing]
+        , textOnly
+        ]
+    state <-
+      runHarness
+        HarnessConfig
+          { harnessProvider = provider
+          , harnessRequestTemplate = requestTemplate
+          , harnessSystemPrompt = "Use tools."
+          , harnessUserPrompt = "Prepare a plan."
+          , harnessInitialHistorySuffix = []
+          , harnessTools =
+              Experiment.experimentTools
+                <> [ objectToolSpec
+                       "unexpected"
+                       "Must not run after completion."
+                       []
+                       []
+                       (\_ -> fail "executed after end_goal")
+                   ]
+          , harnessMaxTurns = 6
+          , harnessEventSink = \event -> modifyIORef' eventsRef (event :)
+          , harnessWorkflowSpec = Just testWorkflow
+          , harnessRequiredSubgoal = Just ("S1", "plan")
+          }
+    remaining <- readIORef remainingRef
+    events <- readIORef eventsRef
+    assertEqual
+      "end_goal stops without another model request"
+      1
+      (length remaining)
+    assertEqual
+      "real summary and status survive completion"
+      (Just (status, Just "Run node check.js; preserve baseline abc123."))
+      (Map.lookup "S1" (harnessSubgoalResults state))
+    assertEqual
+      "calls after end_goal do not execute"
+      Nothing
+      (harnessActiveSubgoal state)
+    assertEqual
+      "invalid ends do not produce completion events"
+      1
+      (length [() | SubgoalEnded{} <- events])
+    assertBool
+      "text-only response adds a user reminder to history"
+      ( any
+          ( \case
+              MessageInput (LLMMessage User parts) ->
+                any
+                  (\case TextPart text -> "calling end_goal" `Text.isInfixOf` text; _ -> False)
+                  parts
+              _ -> False
+          )
+          (harnessHistory state)
+      )
+    assertBool
+      "reminder is visible in trace"
+      (any (\case UserMessageObserved{} -> True; _ -> False) events)
+    assertEqual
+      "harness starts the goal exactly once"
+      1
+      (length [() | SubgoalStarted{} <- events])
+    assertBool
+      "experiment tools expose no obsolete lifecycle or effect tools"
+      ( all
+          ((`notElem` ["begin_subgoal", "end_subgoal", "record_effect"]) . toolName)
+          Experiment.experimentTools
+      )
+    assertBool
+      "end_goal is available"
+      (any ((== "end_goal") . toolName) Experiment.experimentTools)
+
+harnessWithoutGoalTest :: IO ()
+harnessWithoutGoalTest = do
+  eventsRef <- newIORef []
+  let done = (responseWithToolCalls []){responseMessage = assistantMessage "Done."}
+  provider@(FakeProvider remainingRef) <- newFakeProvider [done, done]
+  state <-
+    runHarness
+      HarnessConfig
+        { harnessProvider = provider
+        , harnessRequestTemplate = requestTemplate
+        , harnessSystemPrompt = "Follow the skill workflow in order."
+        , harnessUserPrompt = "Run the whole skill."
+        , harnessInitialHistorySuffix = []
+        , harnessTools = []
+        , harnessMaxTurns = 4
+        , harnessEventSink = \event -> modifyIORef' eventsRef (event :)
+        , harnessWorkflowSpec = Nothing
+        , harnessRequiredSubgoal = Nothing
+        }
+  remaining <- readIORef remainingRef
+  events <- readIORef eventsRef
+  assertEqual
+    "unassigned agent stops on a text-only response"
+    1
+    (length remaining)
+  assertEqual
+    "unassigned agent has no active goal"
+    Nothing
+    (harnessActiveSubgoal state)
+  assertBool
+    "unassigned agent has no automatic goal start or completion reminder"
+    ( not
+        ( any
+            (\case SubgoalStarted{} -> True; UserMessageObserved{} -> True; _ -> False)
+            events
+        )
+    )
+
 harnessParallelToolCallsTest :: IO ()
 harnessParallelToolCallsTest = do
   eventsRef <- newIORef []
@@ -1583,14 +1815,7 @@ harnessParallelToolCallsTest = do
   finishedRef <- newIORef []
   provider <-
     newFakeProvider
-      [ responseWithToolCall $
-          ToolCall
-            { toolCallId = "call-begin"
-            , toolCallName = "begin_subgoal"
-            , toolCallArguments =
-                object ["id" .= ("S1" :: Text), "name" .= ("tiny step" :: Text)]
-            }
-      , responseWithToolCalls
+      [ responseWithToolCalls
           [ ToolCall
               { toolCallId = "call-slow-a"
               , toolCallName = "slow"
@@ -1605,7 +1830,7 @@ harnessParallelToolCallsTest = do
       , responseWithToolCall $
           ToolCall
             { toolCallId = "call-end"
-            , toolCallName = "end_subgoal"
+            , toolCallName = "end_goal"
             , toolCallArguments =
                 object ["id" .= ("S1" :: Text), "status" .= ("success" :: Text)]
             }
@@ -1628,12 +1853,12 @@ harnessParallelToolCallsTest = do
         , harnessUserPrompt = "Run parallel tools."
         , harnessInitialHistorySuffix = []
         , harnessTools =
-            [ beginSubgoalTool
-            , slowTool startedRef finishedRef
-            , endSubgoalTool
+            [ slowTool startedRef finishedRef
+            , endGoalTool
             ]
         , harnessMaxTurns = 8
         , harnessEventSink = \event -> atomicModifyIORef' eventsRef (\events -> (event : events, ()))
+        , harnessRequiredSubgoal = Just ("S1", "tiny step")
         , harnessWorkflowSpec = Just testWorkflow
         }
   after <- getCurrentTime
@@ -1674,10 +1899,9 @@ requestTemplate =
 
 testTools :: [ToolSpec]
 testTools =
-  [ beginSubgoalTool
-  , recordEffectTool
+  [ recordEffectTool
   , shellTool
-  , endSubgoalTool
+  , endGoalTool
   ]
 
 testWorkflow :: WorkflowSpec
@@ -1755,29 +1979,6 @@ fakeAgentRunResult node =
         SnapshotId ("snapshot-" <> unGoalNodeId (goalNodeId node))
     }
 
-beginSubgoalTool :: ToolSpec
-beginSubgoalTool =
-  objectToolSpec
-    "begin_subgoal"
-    "Start a subgoal."
-    [ ("id", textSchema)
-    , ("name", textSchema)
-    ]
-    ["id", "name"]
-    $ \toolCall ->
-      case parseArgs toolCall of
-        Left err -> pure (toolResult toolCall err, [])
-        Right args ->
-          pure
-            ( toolResult toolCall "started"
-            ,
-              [ SubgoalStarted
-                  { eventSubgoalId = beginId args
-                  , eventSubgoalName = beginName args
-                  }
-              ]
-            )
-
 recordEffectTool :: ToolSpec
 recordEffectTool =
   objectToolSpec
@@ -1840,10 +2041,10 @@ slowTool startedRef finishedRef =
             (\names -> (slowName args : names, ()))
           pure (toolResult toolCall ("slow " <> slowName args), [])
 
-endSubgoalTool :: ToolSpec
-endSubgoalTool =
+endGoalTool :: ToolSpec
+endGoalTool =
   objectToolSpec
-    "end_subgoal"
+    "end_goal"
     "End a subgoal."
     [ ("id", textSchema)
     , ("status", textSchema)
@@ -1868,13 +2069,6 @@ fakeResponses :: [LLMResponse]
 fakeResponses =
   [ responseWithToolCall $
       ToolCall
-        { toolCallId = "call-begin"
-        , toolCallName = "begin_subgoal"
-        , toolCallArguments =
-            object ["id" .= ("S1" :: Text), "name" .= ("mojibake step" :: Text)]
-        }
-  , responseWithToolCall $
-      ToolCall
         { toolCallId = "call-effect"
         , toolCallName = "record_effect"
         , toolCallArguments =
@@ -1892,7 +2086,7 @@ fakeResponses =
   , responseWithToolCall $
       ToolCall
         { toolCallId = "call-end"
-        , toolCallName = "end_subgoal"
+        , toolCallName = "end_goal"
         , toolCallArguments =
             object ["id" .= ("S1" :: Text), "status" .= ("success" :: Text)]
         }
@@ -1941,16 +2135,6 @@ instance LLM FakeProvider where
       response : rest -> do
         modifyIORef' responsesRef (const rest)
         pure (Right response)
-
-data BeginArgs = BeginArgs
-  { beginId :: Text
-  , beginName :: Text
-  }
-
-instance FromJSON BeginArgs where
-  parseJSON =
-    withObject "BeginArgs" $ \value ->
-      BeginArgs <$> value .: "id" <*> value .: "name"
 
 newtype ShellArgs = ShellArgs
   { shellCommand :: Text
@@ -2011,9 +2195,9 @@ isSubgoalStarted :: HarnessEvent -> Bool
 isSubgoalStarted SubgoalStarted{eventSubgoalId = "S1"} = True
 isSubgoalStarted _ = False
 
-isCanonicalSubgoalName :: HarnessEvent -> Bool
-isCanonicalSubgoalName SubgoalStarted{eventSubgoalId = "S1", eventSubgoalName = "tiny step"} = True
-isCanonicalSubgoalName _ = False
+isAssignedGoalName :: HarnessEvent -> Bool
+isAssignedGoalName SubgoalStarted{eventSubgoalId = "S1", eventSubgoalName = "tiny step"} = True
+isAssignedGoalName _ = False
 
 isSubgoalEnded :: HarnessEvent -> Bool
 isSubgoalEnded SubgoalEnded{eventSubgoalId = "S1", eventStatus = "success"} = True

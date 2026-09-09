@@ -40,9 +40,16 @@ import Agent.SeaOfGoals.Harness
   , HarnessState (..)
   , runHarness
   )
+import Agent.SeaOfGoals.HistoryHandoff
+  ( GoalHistories
+  , historiesForGoal
+  , newGoalHistories
+  , ownHistoryAfterInitialItems
+  , rememberGoalHistory
+  )
 import Agent.SeaOfGoals.LLM
   ( LLMContentPart (TextPart)
-  , LLMInputItem
+  , LLMInputItem (ToolCallInput, ToolResultInput)
   , LLMRequest (..)
   , ResponseFormat (PlainText)
   , ToolCall (..)
@@ -81,6 +88,7 @@ import Agent.SeaOfGoals.Scheduling.SerialScheduler
 import Agent.SeaOfGoals.Tools
   ( ToolSpec
   , objectToolSpec
+  , toolName
   )
 import Agent.SeaOfGoals.Trace
   ( EffectRecord (..)
@@ -207,6 +215,7 @@ data ExperimentContext = ExperimentContext
   , experimentEventSink :: HarnessEvent -> IO ()
   , experimentWorkflowSpec :: Maybe WorkflowSpec
   , experimentCodexHistoryHandoff :: Bool
+  , experimentHarnessHistoryHandoff :: Bool
   , experimentConcurrentWorkspaceMode :: ConcurrentWorkspaceMode
   , experimentGoalContextPreloadConfig :: GoalContextPreloadConfig
   , experimentGoalContextPreloadPlan :: GoalContextPreloadPlan
@@ -294,6 +303,7 @@ loadExperimentContext apiKey prompt = do
   codexProcessConfig <- loadCodexProcessConfigFromEnv
   workflowSpec <- loadWorkflowSpecFromEnv
   codexHistoryHandoff <- loadCodexHistoryHandoff
+  harnessHistoryHandoff <- loadHarnessHistoryHandoff
   concurrentWorkspaceMode <- loadConcurrentWorkspaceMode
   goalContextPreloadConfig <- loadGoalContextPreloadConfigFromEnv
   goalContextPreloadPlan <- loadGoalContextPreloadPlanFromEnv
@@ -336,10 +346,21 @@ loadExperimentContext apiKey prompt = do
       if harnessLifecycle
         then experimentSystemPrompt
         else experimentSystemPromptNoLifecycle
+    effectiveBaseSystemPrompt =
+      if agentRunner == HarnessAgentRunner && harnessHistoryHandoff
+        then
+          Text.replace
+            "When the step is complete, call end_goal with its id, status, and a substantive summary for successor goals. Include prepared plans, exact commands, results, and limitations they need. For an assigned compiled goal, this ends execution immediately."
+            "When the step is complete, call end_goal with its id and status. In history-handoff mode, do not generate a summary; successor goals receive the complete goal history. For an assigned compiled goal, this ends execution immediately."
+            baseSystemPrompt
+        else baseSystemPrompt
     systemPrompt =
       Text.intercalate
         "\n\n"
-        (filter (not . Text.null) [baseSystemPrompt, skillContext, workflowPrompt])
+        ( filter
+            (not . Text.null)
+            [effectiveBaseSystemPrompt, skillContext, workflowPrompt]
+        )
   pure
     ExperimentContext
       { experimentBackend = backend
@@ -355,6 +376,7 @@ loadExperimentContext apiKey prompt = do
       , experimentEventSink = lockedAppendEvent traceLock tracePath
       , experimentWorkflowSpec = workflowSpec
       , experimentCodexHistoryHandoff = codexHistoryHandoff
+      , experimentHarnessHistoryHandoff = harnessHistoryHandoff
       , experimentConcurrentWorkspaceMode = concurrentWorkspaceMode
       , experimentGoalContextPreloadConfig = goalContextPreloadConfig
       , experimentGoalContextPreloadPlan = goalContextPreloadPlan
@@ -377,11 +399,13 @@ runSinglePrompt context = do
             , harnessRequestTemplate = experimentRequestTemplate context
             , harnessSystemPrompt = experimentSystemPromptText context
             , harnessUserPrompt = experimentUserPromptText context
-            , harnessInitialHistorySuffix = []
-            , harnessTools = experimentToolsForRun context
+            , harnessInitialHistorySuffix = workspaceContextHistory
+            , harnessTools =
+                filter ((/= "set_preload_plan") . toolName) (experimentToolsForRun context)
             , harnessMaxTurns = 64
             , harnessEventSink = experimentEventSink context
             , harnessWorkflowSpec = experimentWorkflowSpec context
+            , harnessRequiredSubgoal = Nothing
             }
     CodexAgentRunner -> do
       workspaceRoot <- normalise <$> getCurrentDirectory
@@ -411,11 +435,17 @@ runSerialPromptWithGraph context compiledGraph = do
   let goalGraph = compiledGraphToGoalGraph compiledGraph
   summariesRef <- newSummaries
   historiesRef <- newCodexHistories
+  harnessHistoriesRef <- newGoalHistories
   result <-
     runSerialScheduler
       SerialScheduler
         { serialSchedulerRunGoal =
-            runSerialGoal context goalGraph summariesRef historiesRef
+            runSerialGoal
+              context
+              goalGraph
+              summariesRef
+              historiesRef
+              harnessHistoriesRef
         }
       goalGraph
   case result of
@@ -446,6 +476,7 @@ runConcurrentPromptWithGraph context compiledGraph = do
   summariesRef <- newSummaries
   acceptedHistoriesRef <- newCodexHistories
   pendingHistoriesRef <- newCodexHistories
+  harnessHistoriesRef <- newGoalHistories
   runsRef <- newIORef Map.empty
   acceptedEffectsRef <- newIORef []
   acceptedGenerationRef <- newIORef 0
@@ -465,6 +496,7 @@ runConcurrentPromptWithGraph context compiledGraph = do
               summariesRef
               acceptedHistoriesRef
               pendingHistoriesRef
+              harnessHistoriesRef
               acceptedGenerationRef
               runBaseGenerationsRef
               runsRef
@@ -553,9 +585,10 @@ runSerialGoal
   -> GoalGraph
   -> Summaries
   -> CodexHistories
+  -> GoalHistories
   -> GoalNode
   -> IO (Either Text AgentRunResult)
-runSerialGoal context goalGraph summaries histories node = do
+runSerialGoal context goalGraph summaries histories harnessHistories node = do
   recordGraphSnapshot
     context
     "serial_goal_enter"
@@ -569,22 +602,25 @@ runSerialGoal context goalGraph summaries histories node = do
         serialGoalPrompt
           (experimentUserPromptText context)
           goalGraph
+          (experimentHarnessHistoryHandoff context)
           predecessorSummaries
           predecessorHistories
           node
   case experimentAgentRunner context of
     HarnessAgentRunner ->
-      runSerialHarnessGoal context summaries node prompt
+      runSerialHarnessGoal context goalGraph summaries harnessHistories node prompt
     CodexAgentRunner ->
       runSerialCodexGoal context summaries histories node prompt
 
 runSerialHarnessGoal
   :: ExperimentContext
+  -> GoalGraph
   -> Summaries
+  -> GoalHistories
   -> GoalNode
   -> Text
   -> IO (Either Text AgentRunResult)
-runSerialHarnessGoal context summaries node prompt = do
+runSerialHarnessGoal context goalGraph summaries harnessHistories node prompt = do
   workspaceRoot <- normalise <$> getCurrentDirectory
   preloaded <-
     preloadGoalContextForWorkspace
@@ -592,6 +628,12 @@ runSerialHarnessGoal context summaries node prompt = do
       (Just (goalNodeId node))
       workspaceRoot
       prompt
+  handoffHistory <-
+    harnessHistoryFor context goalGraph harnessHistories (goalNodeId node)
+  let initialSuffix =
+        workspaceContextHistory
+          <> handoffHistory
+          <> preloadedGoalContextHistory preloaded
   state <-
     runHarness
       HarnessConfig
@@ -599,15 +641,17 @@ runSerialHarnessGoal context summaries node prompt = do
         , harnessRequestTemplate = experimentRequestTemplate context
         , harnessSystemPrompt = experimentSystemPromptText context
         , harnessUserPrompt = prompt
-        , harnessInitialHistorySuffix = preloadedGoalContextHistory preloaded
+        , harnessInitialHistorySuffix = initialSuffix
         , harnessTools = experimentToolsForRun context
         , harnessMaxTurns = 32
         , harnessEventSink = experimentEventSink context
         , harnessWorkflowSpec = experimentWorkflowSpec context
+        , harnessRequiredSubgoal =
+            Just (unGoalNodeId (goalNodeId node), goalNodeName node)
         }
   let
     status = serialGoalStatus node state
-    summary = serialGoalSummary node status
+    summary = serialGoalSummary node status state
     result =
       AgentRunResult
         { agentRunResultGoal = goalNodeId node
@@ -620,6 +664,10 @@ runSerialHarnessGoal context summaries node prompt = do
   if serialGoalStatusIsTerminal status
     then do
       rememberSummary summaries (goalNodeId node) summary
+      rememberGoalHistory
+        harnessHistories
+        (goalNodeId node)
+        (ownHistoryAfterInitialItems (2 + length initialSuffix) (harnessHistory state))
       pure (Right result)
     else
       pure
@@ -748,19 +796,35 @@ preloadGoalContextForWorkspace
   -> Text
   -> IO PreloadedGoalContext
 preloadGoalContextForWorkspace context maybeGoalId workspaceRoot prompt = do
-  dynamicPlan <- readIORef (experimentDynamicGoalContextPreloadPlan context)
-  let
-    GoalContextPreloadPlan plan =
-      mergeGoalContextPreloadPlans
-        (experimentGoalContextPreloadPlan context)
-        dynamicPlan
-    plannedFiles =
-      maybeGoalId >>= \goalId -> Map.lookup (unGoalNodeId goalId) plan
-  preloadGoalContextWithPlanDetailed
-    (experimentGoalContextPreloadConfig context)
-    plannedFiles
-    workspaceRoot
-    prompt
+  if historyHandoffReplacesPreload context
+    then pure emptyPreloadedGoalContext
+    else do
+      dynamicPlan <- readIORef (experimentDynamicGoalContextPreloadPlan context)
+      let
+        GoalContextPreloadPlan plan =
+          mergeGoalContextPreloadPlans
+            (experimentGoalContextPreloadPlan context)
+            dynamicPlan
+        plannedFiles =
+          maybeGoalId >>= \goalId -> Map.lookup (unGoalNodeId goalId) plan
+      preloadGoalContextWithPlanDetailed
+        (experimentGoalContextPreloadConfig context)
+        plannedFiles
+        workspaceRoot
+        prompt
+
+historyHandoffReplacesPreload :: ExperimentContext -> Bool
+historyHandoffReplacesPreload context =
+  experimentAgentRunner context == HarnessAgentRunner
+    && experimentHarnessHistoryHandoff context
+
+emptyPreloadedGoalContext :: PreloadedGoalContext
+emptyPreloadedGoalContext =
+  PreloadedGoalContext
+    { preloadedGoalContextText = ""
+    , preloadedGoalContextHistory = []
+    , preloadedGoalContextReads = Set.empty
+    }
 
 preloadTextPrompt :: PreloadedGoalContext -> Text -> Text
 preloadTextPrompt preloaded prompt =
@@ -818,6 +882,7 @@ runConcurrentGoal
   -> Summaries
   -> CodexHistories
   -> CodexHistories
+  -> GoalHistories
   -> IORef Int
   -> IORef (Map GoalNodeId Int)
   -> IORef (Map GoalNodeId Int)
@@ -830,6 +895,7 @@ runConcurrentGoal
   summaries
   histories
   pendingHistories
+  harnessHistories
   acceptedGenerationRef
   runBaseGenerationsRef
   runsRef
@@ -861,10 +927,13 @@ runConcurrentGoal
       summariesFor summaries (goalPredecessors goalGraph (goalNodeId node))
     predecessorHistories <-
       historiesFor context goalGraph histories (goalNodeId node)
+    harnessPredecessorHistory <-
+      harnessHistoryFor context goalGraph harnessHistories (goalNodeId node)
     let prompt =
           serialGoalPrompt
             (experimentUserPromptText context)
             goalGraph
+            (experimentHarnessHistoryHandoff context)
             predecessorSummaries
             predecessorHistories
             node
@@ -888,8 +957,10 @@ runConcurrentGoal
               ancestorWorkspace
               taskWorkspace
               tools
+              harnessHistories
               node
               prompt
+              harnessPredecessorHistory
               (preloadedGoalContextHistory preloaded)
               (preloadedGoalContextReads preloaded)
           CodexAgentRunner ->
@@ -923,54 +994,74 @@ runConcurrentHarnessGoal
   -> FilePath
   -> FilePath
   -> [ToolSpec]
+  -> GoalHistories
   -> GoalNode
   -> Text
   -> [LLMInputItem]
+  -> [LLMInputItem]
   -> Set FilePath
   -> IO (Either Text AgentRunResult)
-runConcurrentHarnessGoal context ancestorWorkspace taskWorkspace tools node prompt preloadHistory preloadedReads = do
-  state <-
-    runHarness
-      HarnessConfig
-        { harnessProvider = experimentBackend context
-        , harnessRequestTemplate = experimentRequestTemplate context
-        , harnessSystemPrompt = experimentSystemPromptText context
-        , harnessUserPrompt = prompt
-        , harnessInitialHistorySuffix = preloadHistory
-        , harnessTools = tools
-        , harnessMaxTurns = 32
-        , harnessEventSink = experimentEventSink context
-        , harnessWorkflowSpec = experimentWorkflowSpec context
-        }
-  let status = serialGoalStatus node state
-  changedPaths <- workspaceChangedPaths ancestorWorkspace taskWorkspace
-  let
-    summary = serialGoalSummary node status
-    result =
-      AgentRunResult
-        { agentRunResultGoal = goalNodeId node
-        , agentRunResultStatus = status
-        , agentRunResultSummaryForDependents = summary
-        , agentRunResultReads = preloadedReads
-        , agentRunResultWrites = Set.fromList changedPaths
-        , agentRunResultSnapshot =
-            SnapshotId
-              ( unGoalNodeId (goalNodeId node)
-                  <> ":"
-                  <> Text.pack taskWorkspace
+runConcurrentHarnessGoal
+  context
+  ancestorWorkspace
+  taskWorkspace
+  tools
+  harnessHistories
+  node
+  prompt
+  handoffHistory
+  preloadHistory
+  preloadedReads = do
+    let initialSuffix = workspaceContextHistory <> handoffHistory <> preloadHistory
+    state <-
+      runHarness
+        HarnessConfig
+          { harnessProvider = experimentBackend context
+          , harnessRequestTemplate = experimentRequestTemplate context
+          , harnessSystemPrompt = experimentSystemPromptText context
+          , harnessUserPrompt = prompt
+          , harnessInitialHistorySuffix = initialSuffix
+          , harnessTools = tools
+          , harnessMaxTurns = 32
+          , harnessEventSink = experimentEventSink context
+          , harnessWorkflowSpec = experimentWorkflowSpec context
+          , harnessRequiredSubgoal =
+              Just (unGoalNodeId (goalNodeId node), goalNodeName node)
+          }
+    let status = serialGoalStatus node state
+    changedPaths <- workspaceChangedPaths ancestorWorkspace taskWorkspace
+    let
+      summary = serialGoalSummary node status state
+      result =
+        AgentRunResult
+          { agentRunResultGoal = goalNodeId node
+          , agentRunResultStatus = status
+          , agentRunResultSummaryForDependents = summary
+          , agentRunResultReads = preloadedReads
+          , agentRunResultWrites = Set.fromList changedPaths
+          , agentRunResultSnapshot =
+              SnapshotId
+                ( unGoalNodeId (goalNodeId node)
+                    <> ":"
+                    <> Text.pack taskWorkspace
+                )
+          }
+    if serialGoalStatusIsTerminal status
+      then do
+        rememberGoalHistory
+          harnessHistories
+          (goalNodeId node)
+          (ownHistoryAfterInitialItems (2 + length initialSuffix) (harnessHistory state))
+        pure (Right result)
+      else
+        pure
+          ( Left
+              ( "concurrent goal "
+                  <> unGoalNodeId (goalNodeId node)
+                  <> " did not complete successfully: "
+                  <> status
               )
-        }
-  if serialGoalStatusIsTerminal status
-    then pure (Right result)
-    else
-      pure
-        ( Left
-            ( "concurrent goal "
-                <> unGoalNodeId (goalNodeId node)
-                <> " did not complete successfully: "
-                <> status
-            )
-        )
+          )
 
 runConcurrentCodexGoal
   :: ExperimentContext
@@ -1526,11 +1617,12 @@ lockedAppendEvent lock path event =
 serialGoalPrompt
   :: Text
   -> GoalGraph
+  -> Bool
   -> [(GoalNodeId, Text)]
   -> [(GoalNodeId, Text)]
   -> GoalNode
   -> Text
-serialGoalPrompt originalPrompt goalGraph predecessorSummaries predecessorHistories node =
+serialGoalPrompt originalPrompt goalGraph historyHandoff predecessorSummaries predecessorHistories node =
   Text.intercalate
     "\n\n"
     ( filter
@@ -1552,14 +1644,15 @@ serialGoalPrompt originalPrompt goalGraph predecessorSummaries predecessorHistor
             , "Do not read harness trajectory files such as sog-trace.jsonl; they are private experiment records, not task inputs."
             , "If this goal plans preloaded context, call set_preload_plan exactly once. Every key in that plan must be one of the compiled goal ids listed above, and each key must describe files useful for that exact goal."
             , ""
-            , "Before doing work, call begin_subgoal with this exact goal id."
-            , "When this goal is complete, call end_subgoal with this exact goal id and a concise summary."
+            , "The harness has already started this goal. Begin its assigned work directly."
+            , endGoalInstruction
             , "Do not start a different goal in this agent loop."
             ]
         ]
     )
  where
   renderedSummaries
+    | historyHandoff = ""
     | null predecessorSummaries = ""
     | otherwise =
         Text.unlines
@@ -1568,6 +1661,11 @@ serialGoalPrompt originalPrompt goalGraph predecessorSummaries predecessorHistor
           )
   renderSummary (goalId, summary) =
     "- " <> unGoalNodeId goalId <> ": " <> summary
+  endGoalInstruction
+    | historyHandoff =
+        "When this goal is complete, call end_goal with this exact goal id and status. Do not add a summary; successor goals receive the complete goal history."
+    | otherwise =
+        "When this goal is complete, call end_goal with this exact goal id and a concise summary."
   renderedHistories
     | null predecessorHistories = ""
     | otherwise =
@@ -1622,6 +1720,9 @@ renderCompiledGoalGraphForPrompt graph currentNode =
 
 serialGoalStatus :: GoalNode -> HarnessState -> Text
 serialGoalStatus node state
+  | Just (status, _) <-
+      Map.lookup (unGoalNodeId (goalNodeId node)) (harnessSubgoalResults state) =
+      status
   | unGoalNodeId (goalNodeId node)
       `Set.member` workflowCompletedNodes (harnessWorkflowStatus state) =
       "success"
@@ -1637,9 +1738,13 @@ serialGoalStatusIsTerminal :: Text -> Bool
 serialGoalStatusIsTerminal status =
   status == "success" || status == "skipped"
 
-serialGoalSummary :: GoalNode -> Text -> Text
-serialGoalSummary node status =
-  goalNodeName node <> " finished with status " <> status
+serialGoalSummary :: GoalNode -> Text -> HarnessState -> Text
+serialGoalSummary node status state =
+  fromMaybe
+    (goalNodeName node <> " finished with status " <> status)
+    ( Map.lookup (unGoalNodeId (goalNodeId node)) (harnessSubgoalResults state)
+        >>= snd
+    )
 
 type Summaries = IORef (Map GoalNodeId Text)
 
@@ -1691,6 +1796,16 @@ historiesFor context graph histories goalId
         , Just history <- [Map.lookup predecessor historyMap]
         ]
 
+harnessHistoryFor
+  :: ExperimentContext
+  -> GoalGraph
+  -> GoalHistories
+  -> GoalNodeId
+  -> IO [LLMInputItem]
+harnessHistoryFor context graph histories goalId
+  | not (experimentHarnessHistoryHandoff context) = pure []
+  | otherwise = historiesForGoal graph histories goalId
+
 transitivePredecessorsInSerialOrder :: GoalGraph -> GoalNodeId -> [GoalNodeId]
 transitivePredecessorsInSerialOrder graph goalId =
   sortOn goalOrder (Set.toList (go Set.empty (goalPredecessors graph goalId)))
@@ -1714,6 +1829,18 @@ transitivePredecessorsInSerialOrder graph goalId =
 loadCodexHistoryHandoff :: IO Bool
 loadCodexHistoryHandoff = do
   maybeValue <- lookupEnv "SOG_CODEX_HISTORY_HANDOFF"
+  pure
+    ( case fmap Text.toLower (Text.pack <$> maybeValue) of
+        Just "1" -> True
+        Just "true" -> True
+        Just "yes" -> True
+        Just "on" -> True
+        _ -> False
+    )
+
+loadHarnessHistoryHandoff :: IO Bool
+loadHarnessHistoryHandoff = do
+  maybeValue <- lookupEnv "SOG_HARNESS_HISTORY_HANDOFF"
   pure
     ( case fmap Text.toLower (Text.pack <$> maybeValue) of
         Just "1" -> True
@@ -1799,12 +1926,37 @@ experimentTools =
 
 experimentToolsWithShell :: ToolSpec -> [ToolSpec]
 experimentToolsWithShell shellToolSpec =
-  [ beginSubgoalTool
-  , endSubgoalTool
-  , recordEffectTool
+  [ endGoalTool
   , writeFileTool
   , shellToolSpec
   ]
+
+workspaceContextHistory :: [LLMInputItem]
+workspaceContextHistory =
+  [ ToolCallInput contextCall
+  , ToolResultInput
+      ToolResult
+        { toolResultCallId = toolCallId contextCall
+        , toolResultName = Just "workspace_context"
+        , toolResultContent =
+            [ TextPart
+                ( Text.unlines
+                    [ "current_directory: /workspace"
+                    , "workspace_root: /workspace"
+                    , "allowed_scope: /workspace/**"
+                    , "Only read or modify files below /workspace. Do not inspect parent directories, filesystem roots, host paths, or harness control files."
+                    ]
+                )
+            ]
+        }
+  ]
+ where
+  contextCall =
+    ToolCall
+      { toolCallId = "sog-workspace-context"
+      , toolCallName = "workspace_context"
+      , toolCallArguments = object []
+      }
 
 loadExperimentToolsWithControlRoot
   :: FilePath -> IORef GoalContextPreloadPlan -> Bool -> IO [ToolSpec]
@@ -1909,42 +2061,21 @@ experimentToolsForPathWithLifecycle workspaceRoot dynamicPlan harnessLifecycle =
 lifecycleTools :: Bool -> [ToolSpec]
 lifecycleTools False = []
 lifecycleTools True =
-  [ beginSubgoalTool
-  , endSubgoalTool
-  , recordEffectTool
+  [ endGoalTool
   ]
 
-beginSubgoalTool :: ToolSpec
-beginSubgoalTool =
+endGoalTool :: ToolSpec
+endGoalTool =
   objectToolSpec
-    "begin_subgoal"
-    "Mark the beginning of a concrete subgoal before doing work."
-    [ ("id", textSchema "Stable subgoal id, such as an SCFG node id N001")
-    , ("name", textSchema "Short human-readable subgoal name")
-    ]
-    ["id", "name"]
-    $ \toolCall -> do
-      case parseArgs toolCall of
-        Left err -> pure (textResult toolCall err, [])
-        Right args ->
-          pure
-            ( textResult toolCall "subgoal started"
-            ,
-              [ SubgoalStarted
-                  { eventSubgoalId = beginId args
-                  , eventSubgoalName = beginName args
-                  }
-              ]
-            )
-
-endSubgoalTool :: ToolSpec
-endSubgoalTool =
-  objectToolSpec
-    "end_subgoal"
-    "Mark the end of the current subgoal."
-    [ ("id", textSchema "Subgoal id being ended")
+    "end_goal"
+    "Finish the assigned goal and pass its result to successor goals."
+    [ ("id", textSchema "Assigned goal id being ended")
     , ("status", textSchema "success, failed, skipped, or blocked")
-    , ("summary", textSchema "Short result summary")
+    ,
+      ( "summary"
+      , textSchema
+          "Optional result summary. History-handoff goals pass their complete history instead."
+      )
     ]
     ["id", "status"]
     $ \toolCall -> do
@@ -1952,44 +2083,12 @@ endSubgoalTool =
         Left err -> pure (textResult toolCall err, [])
         Right args ->
           pure
-            ( textResult toolCall "subgoal ended"
+            ( textResult toolCall "goal ended"
             ,
               [ SubgoalEnded
                   { eventSubgoalId = endId args
                   , eventStatus = endStatus args
                   , eventSummary = endSummary args
-                  }
-              ]
-            )
-
-recordEffectTool :: ToolSpec
-recordEffectTool =
-  objectToolSpec
-    "record_effect"
-    "Record a side effect observed by the agent."
-    [
-      ( "kind"
-      , textSchema "read, write, delete, spawn, network, db, docker, or artifact"
-      )
-    , ("resource", textSchema "Resource identifier affected by this step")
-    , ("detail", textSchema "Optional short detail")
-    ]
-    ["kind", "resource"]
-    $ \toolCall -> do
-      case parseArgs toolCall of
-        Left err -> pure (textResult toolCall err, [])
-        Right args ->
-          pure
-            ( textResult toolCall "effect recorded"
-            ,
-              [ EffectRecorded
-                  { eventEffect =
-                      EffectRecord
-                        { effectKind = effectKindArg args
-                        , effectResource = effectResourceArg args
-                        , effectDetail = effectDetailArg args
-                        }
-                  , eventActiveSubgoal = Nothing
                   }
               ]
             )
@@ -2194,11 +2293,6 @@ parseArgs toolCall =
     Left err -> Left ("invalid tool arguments: " <> Text.pack err)
     Right value -> Right value
 
-data BeginSubgoalArgs = BeginSubgoalArgs
-  { beginId :: Text
-  , beginName :: Text
-  }
-
 newtype SetPreloadPlanArgs = SetPreloadPlanArgs
   { preloadPlanJson :: Text
   }
@@ -2208,40 +2302,22 @@ instance FromJSON SetPreloadPlanArgs where
     withObject "SetPreloadPlanArgs" $ \value ->
       SetPreloadPlanArgs <$> value .: "plan_json"
 
-instance FromJSON BeginSubgoalArgs where
-  parseJSON =
-    withObject "BeginSubgoalArgs" $ \value ->
-      BeginSubgoalArgs
-        <$> value .: "id"
-        <*> value .: "name"
-
-data EndSubgoalArgs = EndSubgoalArgs
+data EndGoalArgs = EndGoalArgs
   { endId :: Text
   , endStatus :: Text
   , endSummary :: Maybe Text
   }
 
-instance FromJSON EndSubgoalArgs where
+instance FromJSON EndGoalArgs where
   parseJSON =
-    withObject "EndSubgoalArgs" $ \value ->
-      EndSubgoalArgs
-        <$> value .: "id"
-        <*> value .: "status"
-        <*> value .:? "summary"
-
-data EffectArgs = EffectArgs
-  { effectKindArg :: Text
-  , effectResourceArg :: Text
-  , effectDetailArg :: Maybe Text
-  }
-
-instance FromJSON EffectArgs where
-  parseJSON =
-    withObject "EffectArgs" $ \value ->
-      EffectArgs
-        <$> value .: "kind"
-        <*> value .: "resource"
-        <*> value .:? "detail"
+    withObject "EndGoalArgs" $ \value ->
+      do
+        goalId <- value .: "id"
+        status <- value .: "status"
+        summary <- value .:? "summary"
+        if status `notElem` ["success", "failed", "skipped", "blocked"]
+          then fail "end_goal requires a valid status"
+          else pure (EndGoalArgs goalId status (Text.strip <$> summary))
 
 data WriteFileArgs = WriteFileArgs
   { writePath :: Text

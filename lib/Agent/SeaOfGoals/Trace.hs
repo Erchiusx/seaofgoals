@@ -34,8 +34,12 @@ instance ToJSON EffectRecord where
 data HarnessEvent
   = HarnessStarted
       { eventPrompt :: Text
+      , eventSystemPrompt :: Text
       }
   | AssistantMessageObserved
+      { eventContent :: Text
+      }
+  | UserMessageObserved
       { eventContent :: Text
       }
   | ReasoningObserved
@@ -119,10 +123,16 @@ data HarnessEvent
 instance ToJSON HarnessEvent where
   toJSON event =
     case event of
-      HarnessStarted prompt ->
-        base "harness_started" ["prompt" .= prompt]
+      HarnessStarted prompt systemPrompt ->
+        base
+          "harness_started"
+          [ "prompt" .= prompt
+          , "system_prompt" .= systemPrompt
+          ]
       AssistantMessageObserved content ->
         base "assistant_message" ["content" .= content]
+      UserMessageObserved content ->
+        base "user_message" ["content" .= content]
       ReasoningObserved reasoningId encryptedContentChars summaryItems ->
         base
           "reasoning_observed"
@@ -236,6 +246,7 @@ eventType event =
   case event of
     HarnessStarted{} -> "harness_started"
     AssistantMessageObserved{} -> "assistant_message"
+    UserMessageObserved{} -> "user_message"
     ReasoningObserved{} -> "reasoning_observed"
     ModelUsageObserved{} -> "model_usage"
     ToolCallObserved{} -> "tool_call"

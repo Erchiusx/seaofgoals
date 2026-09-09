@@ -52,7 +52,8 @@ import System.Directory
   )
 import System.Environment (lookupEnv)
 import System.FilePath
-  ( normalise
+  ( isRelative
+  , normalise
   , splitDirectories
   , takeExtension
   , (</>)
@@ -170,10 +171,11 @@ preloadGoalContextWithPlanDetailed config maybePlannedFiles workspaceRoot prompt
           }
   | otherwise = do
       files <- listWorkspaceFiles workspaceRoot
-      let selected =
-            take
-              (goalContextPreloadMaxFiles config)
-              (selectGoalFiles maybePlannedFiles prompt files)
+      let
+        candidates = selectGoalFiles maybePlannedFiles prompt files
+        selected = case maybePlannedFiles of
+          Just _ -> candidates
+          Nothing -> take (goalContextPreloadMaxFiles config) candidates
       renderedFiles <- mapM (renderFile workspaceRoot config) selected
       pure
         PreloadedGoalContext
@@ -327,12 +329,14 @@ selectGoalFiles :: Maybe [FilePath] -> Text -> [FilePath] -> [FilePath]
 selectGoalFiles maybePlannedFiles prompt files =
   sort
     [ file
-    | file <- files
+    | file <-
+        maybe files (Set.toList . Set.fromList . fmap normalise) maybePlannedFiles
+    , isRelative file
+    , ".." `notElem` splitDirectories file
+    , not (isIgnoredEntry "" file)
     , isLikelyTextSource file
-    , maybe (fileMatchesPrompt prompt file) (Set.member file) planned
+    , maybe (fileMatchesPrompt prompt file) (const True) maybePlannedFiles
     ]
- where
-  planned = Set.fromList . fmap normalise <$> maybePlannedFiles
 
 fileMatchesPrompt :: Text -> FilePath -> Bool
 fileMatchesPrompt prompt file =
@@ -358,6 +362,18 @@ renderFile
   :: FilePath -> GoalContextPreloadConfig -> FilePath -> IO (FilePath, Text)
 renderFile workspaceRoot config relativePath = do
   let path = workspaceRoot </> relativePath
+  exists <- doesFileExist path
+  if exists
+    then renderExistingFile config relativePath path
+    else
+      pure
+        ( relativePath
+        , "[unavailable: planned file does not exist as a regular file in this goal's entry workspace; inspect the actual workspace if needed]"
+        )
+
+renderExistingFile
+  :: GoalContextPreloadConfig -> FilePath -> FilePath -> IO (FilePath, Text)
+renderExistingFile config relativePath path = do
   size <- getFileSize path
   if size > goalContextPreloadMaxBytesPerFile config
     then

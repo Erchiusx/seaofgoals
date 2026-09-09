@@ -41,6 +41,7 @@ library
         Agent.SeaOfGoals.Compile.PromptTemplate
         Agent.SeaOfGoals.ExperimentRunner
         Agent.SeaOfGoals.GoalContextPreload
+        Agent.SeaOfGoals.HistoryHandoff
         Agent.SeaOfGoals.Harness
         Agent.SeaOfGoals.LLM
         Agent.SeaOfGoals.LLM.Backends.GPT
