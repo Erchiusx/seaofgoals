@@ -59,6 +59,13 @@ import Agent.SeaOfGoals.LLM.Backends.GPT
   ( GPTBackend (..)
   , loadGPTEndpointFromEnv
   )
+import Agent.SeaOfGoals.PiProcess
+  ( PiProcessConfig (..)
+  , PiProcessResult (..)
+  , loadPiProcessConfigFromEnv
+  , runPiProcess
+  , runPiSdkProcess
+  )
 import Agent.SeaOfGoals.Scheduling.Agentic
   ( AgentRunResult (..)
   , GoalGraph (..)
@@ -151,6 +158,9 @@ import Data.Aeson
   , (.:?)
   , (.=)
   )
+import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as AesonKey
+import Data.Aeson.KeyMap qualified as AesonKeyMap
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.IORef
@@ -163,7 +173,7 @@ import Data.IORef
 import Data.List (isPrefixOf, sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -211,6 +221,7 @@ data ExperimentContext = ExperimentContext
   , experimentConfig :: Config
   , experimentAgentRunner :: AgentRunnerMode
   , experimentCodexProcessConfig :: CodexProcessConfig
+  , experimentPiProcessConfig :: PiProcessConfig
   , experimentToolsForRun :: [ToolSpec]
   , experimentEventSink :: HarnessEvent -> IO ()
   , experimentWorkflowSpec :: Maybe WorkflowSpec
@@ -226,6 +237,7 @@ data ExperimentContext = ExperimentContext
 data AgentRunnerMode
   = HarnessAgentRunner
   | CodexAgentRunner
+  | PiAgentRunner
   deriving stock (Eq, Show)
 
 data ConcurrentWorkspaceMode
@@ -301,6 +313,7 @@ loadExperimentContext apiKey prompt = do
   config <- loadConfigFromEnv
   agentRunner <- loadAgentRunnerMode
   codexProcessConfig <- loadCodexProcessConfigFromEnv
+  piProcessConfig <- loadPiProcessConfigFromEnv
   workflowSpec <- loadWorkflowSpecFromEnv
   codexHistoryHandoff <- loadCodexHistoryHandoff
   harnessHistoryHandoff <- loadHarnessHistoryHandoff
@@ -372,6 +385,7 @@ loadExperimentContext apiKey prompt = do
       , experimentConfig = config
       , experimentAgentRunner = agentRunner
       , experimentCodexProcessConfig = codexProcessConfig
+      , experimentPiProcessConfig = piProcessConfig
       , experimentToolsForRun = tools
       , experimentEventSink = lockedAppendEvent traceLock tracePath
       , experimentWorkflowSpec = workflowSpec
@@ -428,6 +442,17 @@ runSinglePrompt context = do
       when (codexProcessExitCode result /= 0) $
         fail
           ("codex process failed with exit code " <> show (codexProcessExitCode result))
+    PiAgentRunner -> do
+      workspaceRoot <- normalise <$> getCurrentDirectory
+      result <-
+        runPiProcess
+          (experimentPiProcessConfig context)
+          (experimentEventSink context)
+          Nothing
+          workspaceRoot
+          (piPrompt context (experimentUserPromptText context))
+      when (piProcessExitCode result /= 0) $
+        fail ("pi process failed with exit code " <> show (piProcessExitCode result))
   putStrLn ("Trace written to " <> experimentTracePath context)
 
 runSerialPromptWithGraph :: ExperimentContext -> CompiledGoalGraph -> IO ()
@@ -578,6 +603,7 @@ loadAgentRunnerMode = do
     Just "harness" -> pure HarnessAgentRunner
     Just "api" -> pure HarnessAgentRunner
     Just "codex" -> pure CodexAgentRunner
+    Just "pi" -> pure PiAgentRunner
     Just other -> fail ("unknown SOG_AGENT_RUNNER: " <> Text.unpack other)
 
 runSerialGoal
@@ -598,6 +624,8 @@ runSerialGoal context goalGraph summaries histories harnessHistories node = do
     summariesFor summaries (goalPredecessors goalGraph (goalNodeId node))
   predecessorHistories <-
     historiesFor context goalGraph histories (goalNodeId node)
+  predecessorHarnessHistory <-
+    harnessHistoryFor context goalGraph harnessHistories (goalNodeId node)
   let prompt =
         serialGoalPrompt
           (experimentUserPromptText context)
@@ -611,6 +639,60 @@ runSerialGoal context goalGraph summaries histories harnessHistories node = do
       runSerialHarnessGoal context goalGraph summaries harnessHistories node prompt
     CodexAgentRunner ->
       runSerialCodexGoal context summaries histories node prompt
+    PiAgentRunner ->
+      runSerialPiGoal context summaries node prompt predecessorHarnessHistory
+
+runSerialPiGoal
+  :: ExperimentContext
+  -> Summaries
+  -> GoalNode
+  -> Text
+  -> [LLMInputItem]
+  -> IO (Either Text AgentRunResult)
+runSerialPiGoal context summaries node prompt predecessorHistories = do
+  workspaceRoot <- normalise <$> getCurrentDirectory
+  preloaded <-
+    preloadGoalContextForWorkspace
+      context
+      (Just (goalNodeId node))
+      workspaceRoot
+      prompt
+  let
+    initialHistory = predecessorHistories <> preloadedGoalContextHistory preloaded
+    controlRoot =
+      experimentControlRoot context
+        </> "serial"
+        </> Text.unpack (unGoalNodeId (goalNodeId node))
+        </> "pi-control"
+  result <-
+    case piProcessSdkRunner (experimentPiProcessConfig context) of
+      Just _ ->
+        runPiSdkProcess
+          (experimentPiProcessConfig context)
+          (experimentEventSink context)
+          (Just (unGoalNodeId (goalNodeId node)))
+          workspaceRoot
+          controlRoot
+          (piPrompt context prompt)
+          initialHistory
+      Nothing -> runPiGoalProcess context workspaceRoot node prompt
+  let
+    status = piGoalStatus result
+    summary = piGoalSummary node result
+    agentResult =
+      AgentRunResult
+        { agentRunResultGoal = goalNodeId node
+        , agentRunResultStatus = status
+        , agentRunResultSummaryForDependents = summary
+        , agentRunResultReads = preloadedGoalContextReads preloaded
+        , agentRunResultWrites = Set.empty
+        , agentRunResultSnapshot = SnapshotId (unGoalNodeId (goalNodeId node))
+        }
+  if serialGoalStatusIsTerminal status
+    then do
+      rememberSummary summaries (goalNodeId node) summary
+      pure (Right agentResult)
+    else pure (Left ("serial pi goal failed: " <> status))
 
 runSerialHarnessGoal
   :: ExperimentContext
@@ -775,6 +857,90 @@ runCodexGoalProcessWithControlRoot context workspaceRoot controlRoot node prompt
       }
   recordDynamicPreloadPlanFromControlRoot context controlRoot
   pure result
+
+runPiGoalProcess
+  :: ExperimentContext
+  -> FilePath
+  -> GoalNode
+  -> Text
+  -> IO PiProcessResult
+runPiGoalProcess context workspaceRoot node prompt = do
+  experimentEventSink context $
+    SubgoalStarted
+      { eventSubgoalId = unGoalNodeId (goalNodeId node)
+      , eventSubgoalName = goalNodeName node
+      }
+  result <-
+    runPiProcess
+      (experimentPiProcessConfig context)
+      (experimentEventSink context)
+      (Just (unGoalNodeId (goalNodeId node)))
+      workspaceRoot
+      (piPrompt context prompt)
+  let status = piGoalStatus result
+  experimentEventSink context $
+    SubgoalEnded
+      { eventSubgoalId = unGoalNodeId (goalNodeId node)
+      , eventStatus = status
+      , eventSummary = Just (piGoalSummary node result)
+      }
+  pure result
+
+piPrompt :: ExperimentContext -> Text -> Text
+piPrompt context prompt =
+  Text.intercalate
+    "\n\n"
+    [ "You are executing one SeaOfGoals task node inside an externally managed workspace."
+    , "Work only in the current workspace. Follow the assigned goal exactly and do not reorder workflow goals."
+    , "SeaOfGoals instructions:"
+    , experimentSystemPromptText context
+    , "Task prompt:"
+    , prompt
+    , "When the task is complete, stop and report a concise summary."
+    ]
+
+piGoalStatus :: PiProcessResult -> Text
+piGoalStatus result
+  | Just (status, _) <- piEndGoalResult result = status
+  | piProcessTimedOut result = "timeout"
+  | piProcessExitCode result == 0 = "success"
+  | otherwise = "failed"
+
+piGoalSummary :: GoalNode -> PiProcessResult -> Text
+piGoalSummary node result =
+  case piEndGoalResult result of
+    Just (_, summary) -> summary
+    Nothing ->
+      Text.intercalate
+        " "
+        [ "Goal"
+        , unGoalNodeId (goalNodeId node)
+        , "finished with status"
+        , piGoalStatus result <> "."
+        ]
+
+piEndGoalResult :: PiProcessResult -> Maybe (Text, Text)
+piEndGoalResult result =
+  listToMaybe
+    [ (status, summary)
+    | line <- Text.lines (piProcessStdout result)
+    , Right (Aeson.Object event) <-
+        [Aeson.eitherDecodeStrict (TextEncoding.encodeUtf8 line)]
+    , Just (Aeson.Object rawEvent) <-
+        [AesonKeyMap.lookup (AesonKey.fromString "raw_event") event]
+    , Just (Aeson.String "tool_execution_end") <-
+        [AesonKeyMap.lookup (AesonKey.fromString "type") rawEvent]
+    , Just (Aeson.String "end_goal") <-
+        [AesonKeyMap.lookup (AesonKey.fromString "toolName") rawEvent]
+    , Just (Aeson.Object toolResult) <-
+        [AesonKeyMap.lookup (AesonKey.fromString "result") rawEvent]
+    , Just (Aeson.Object details) <-
+        [AesonKeyMap.lookup (AesonKey.fromString "details") toolResult]
+    , Just (Aeson.String status) <-
+        [AesonKeyMap.lookup (AesonKey.fromString "status") details]
+    , Just (Aeson.String summary) <-
+        [AesonKeyMap.lookup (AesonKey.fromString "summary") details]
+    ]
 
 codexPrompt :: ExperimentContext -> Text -> Text
 codexPrompt context prompt =
@@ -973,6 +1139,17 @@ runConcurrentGoal
               node
               promptWithPreload
               (preloadedGoalContextReads preloaded)
+          PiAgentRunner ->
+            runConcurrentPiGoal
+              context
+              (runRoot </> "control")
+              ancestorWorkspace
+              taskWorkspace
+              node
+              promptWithPreload
+              harnessPredecessorHistory
+              (preloadedGoalContextHistory preloaded)
+              (preloadedGoalContextReads preloaded)
       FuseEventWorkspace -> do
         case experimentAgentRunner context of
           HarnessAgentRunner ->
@@ -988,6 +1165,11 @@ runConcurrentGoal
               runRoot
               node
               prompt
+          PiAgentRunner ->
+            pure
+              ( Left
+                  "SOG_CONCURRENT_WORKSPACE=fuse currently supports SOG_AGENT_RUNNER=codex only"
+              )
 
 runConcurrentHarnessGoal
   :: ExperimentContext
@@ -1110,6 +1292,58 @@ runConcurrentCodexGoal context pendingHistories controlRoot ancestorWorkspace ta
                 <> status
             )
         )
+
+runConcurrentPiGoal
+  :: ExperimentContext
+  -> FilePath
+  -> FilePath
+  -> FilePath
+  -> GoalNode
+  -> Text
+  -> [LLMInputItem]
+  -> [LLMInputItem]
+  -> Set FilePath
+  -> IO (Either Text AgentRunResult)
+runConcurrentPiGoal
+  context
+  controlRoot
+  ancestorWorkspace
+  taskWorkspace
+  node
+  prompt
+  predecessorHistory
+  preloadHistory
+  preloadedReads = do
+    result <-
+      case piProcessSdkRunner (experimentPiProcessConfig context) of
+        Just _ ->
+          runPiSdkProcess
+            (experimentPiProcessConfig context)
+            (experimentEventSink context)
+            (Just (unGoalNodeId (goalNodeId node)))
+            taskWorkspace
+            controlRoot
+            (piPrompt context prompt)
+            (predecessorHistory <> preloadHistory)
+        Nothing -> runPiGoalProcess context taskWorkspace node prompt
+    changedPaths <- workspaceChangedPaths ancestorWorkspace taskWorkspace
+    let
+      status = piGoalStatus result
+      summary = piGoalSummary node result
+      agentResult =
+        AgentRunResult
+          { agentRunResultGoal = goalNodeId node
+          , agentRunResultStatus = status
+          , agentRunResultSummaryForDependents = summary
+          , agentRunResultReads = preloadedReads
+          , agentRunResultWrites = Set.fromList changedPaths
+          , agentRunResultSnapshot =
+              SnapshotId
+                (unGoalNodeId (goalNodeId node) <> ":" <> Text.pack taskWorkspace)
+          }
+    if serialGoalStatusIsTerminal status
+      then pure (Right agentResult)
+      else pure (Left ("concurrent pi goal failed: " <> status))
 
 runConcurrentCodexGoalWithFuse
   :: ExperimentContext

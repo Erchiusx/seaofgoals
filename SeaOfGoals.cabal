@@ -13,6 +13,7 @@ build-type:         Simple
 extra-doc-files:    CHANGELOG.md
 extra-source-files:
     lib/Agent/SeaOfGoals/Prompts/*.txt
+    pi/*.mjs
     seaofgoals.config.json
 
 flag fuse
@@ -46,6 +47,7 @@ library
         Agent.SeaOfGoals.LLM
         Agent.SeaOfGoals.LLM.Backends.GPT
         Agent.SeaOfGoals.LLM.Backends.Gemini
+        Agent.SeaOfGoals.PiProcess
         Agent.SeaOfGoals.Scheduling.Agentic
         Agent.SeaOfGoals.Scheduling.Compiled
         Agent.SeaOfGoals.Scheduling.ConcurrentChase
@@ -92,7 +94,8 @@ library
         template-haskell,
         text,
         time,
-        unix
+        unix,
+        vector
     if flag(fuse)
         exposed-modules:
             Agent.SeaOfGoals.Workspace.Fuse.Mount
@@ -176,6 +179,20 @@ test-suite SeaOfGoals-agent-runner
         SeaOfGoals
     hs-source-dirs:   test-suite/agent-runner
     default-language: GHC2024
+
+test-suite SeaOfGoals-pi-process
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    main-is:          Main.hs
+    hs-source-dirs:   test-suite/pi-process
+    default-language: GHC2024
+    build-depends:
+        base ^>=4.21.0.0,
+        directory,
+        filepath,
+        SeaOfGoals,
+        text,
+        unix
 
 test-suite SeaOfGoals-test
     import:           warnings

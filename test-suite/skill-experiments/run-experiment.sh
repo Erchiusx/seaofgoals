@@ -66,6 +66,7 @@ export SOG_PROMPT_CACHE_KEY="${SOG_PROMPT_CACHE_KEY:-sog:$experiment_name:$SOG_M
 export SOG_PROMPT_CACHE_RETENTION="${SOG_PROMPT_CACHE_RETENTION:-24h}"
 export SOG_CODEX_HOME_HOST="${SOG_CODEX_HOME_HOST:-${CODEX_HOME:-$HOME/.codex}}"
 export SOG_CODEX_HOME="${SOG_CODEX_HOME:-/codex-home}"
+export SOG_PI_SDK_RUNNER="${SOG_PI_SDK_RUNNER:-$repo_root/pi/sog-sdk-runner.mjs}"
 if [ "$SOG_EXPERIMENT_DRIVER" = "docker" ]; then
   export SOG_CONFIG="${SOG_CONFIG:-/seaofgoals.config.json}"
 else
@@ -82,7 +83,7 @@ if [ -z "${OPENAI_API_KEY:-}" ] && [ -f "$HOME/.secrets/openai" ]; then
   source "$HOME/.secrets/openai"
 fi
 
-if [ "$SOG_AGENT_RUNNER" != "codex" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+if [ "$SOG_AGENT_RUNNER" != "codex" ] && [ "$SOG_AGENT_RUNNER" != "pi" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
   echo "OPENAI_API_KEY is not set, and $HOME/.secrets/openai did not set it." >&2
   exit 2
 fi
