@@ -374,7 +374,7 @@ piMessage (ToolCallInput call) =
         .= [ object
                [ "type" .= ("toolCall" :: Text)
                , "id" .= toolCallId call
-               , "name" .= toolCallName call
+               , "name" .= piToolName (toolCallName call)
                , "arguments" .= toolCallArguments call
                ]
            ]
@@ -405,7 +405,7 @@ piMessage (ToolResultInput result) =
   object
     [ "role" .= ("toolResult" :: Text)
     , "toolCallId" .= toolResultCallId result
-    , "toolName" .= toolResultName result
+    , "toolName" .= fmap piToolName (toolResultName result)
     , "content" .= fmap contentPartText (toolResultContent result)
     , "usage" .= piZeroUsage
     , "isError" .= False
@@ -419,6 +419,10 @@ piRole User = "user"
 piRole Assistant = "assistant"
 piRole Tool = "toolResult"
 piRole System = "user"
+
+piToolName :: Text -> Text
+piToolName "shell" = "bash"
+piToolName name = name
 
 piZeroUsage :: Value
 piZeroUsage =

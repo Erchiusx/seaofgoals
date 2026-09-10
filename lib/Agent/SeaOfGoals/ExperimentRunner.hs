@@ -896,6 +896,7 @@ piPrompt context prompt =
     "\n\n"
     [ "You are executing one SeaOfGoals task node inside an externally managed workspace."
     , "Work only in the current workspace. Follow the assigned goal exactly and do not reorder workflow goals."
+    , "If the initial history contains completed preload tool calls and results, treat those reads as already performed for the current workspace. Reuse their file listing and contents instead of repeating the same reads; only read again when a file is missing, changed, or required information was not preloaded."
     , "SeaOfGoals instructions:"
     , experimentSystemPromptText context
     , "Task prompt:"
