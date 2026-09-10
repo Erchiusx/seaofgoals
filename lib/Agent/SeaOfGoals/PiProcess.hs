@@ -285,7 +285,17 @@ piMessage :: LLMInputItem -> Value
 piMessage (MessageInput message) =
   object
     [ "role" .= piRole (messageRole message)
-    , "content" .= messageText message
+    , "content"
+        .= [ object
+               [ "type" .= ("text" :: Text)
+               , "text" .= messageText message
+               ]
+           ]
+    , "api" .= ("openai-responses" :: Text)
+    , "provider" .= ("openai" :: Text)
+    , "model" .= ("sog-history" :: Text)
+    , "usage" .= piZeroUsage
+    , "stopReason" .= ("stop" :: Text)
     , "timestamp" .= (0 :: Int)
     ]
 piMessage (ToolCallInput call) =
@@ -304,7 +314,21 @@ piMessage (ToolCallInput call) =
     , "model" .= ("sog-history" :: Text)
     , "usage"
         .= object
-          ["input" .= (0 :: Int), "output" .= (0 :: Int), "totalTokens" .= (0 :: Int)]
+          [ "input" .= (0 :: Int)
+          , "output" .= (0 :: Int)
+          , "cacheRead" .= (0 :: Int)
+          , "cacheWrite" .= (0 :: Int)
+          , "reasoning" .= (0 :: Int)
+          , "totalTokens" .= (0 :: Int)
+          , "cost"
+              .= object
+                [ "input" .= (0 :: Int)
+                , "output" .= (0 :: Int)
+                , "cacheRead" .= (0 :: Int)
+                , "cacheWrite" .= (0 :: Int)
+                , "total" .= (0 :: Int)
+                ]
+          ]
     , "stopReason" .= ("toolUse" :: Text)
     , "timestamp" .= (0 :: Int)
     ]
@@ -314,6 +338,7 @@ piMessage (ToolResultInput result) =
     , "toolCallId" .= toolResultCallId result
     , "toolName" .= toolResultName result
     , "content" .= fmap contentPartText (toolResultContent result)
+    , "usage" .= piZeroUsage
     , "isError" .= False
     , "timestamp" .= (0 :: Int)
     ]
@@ -325,6 +350,25 @@ piRole User = "user"
 piRole Assistant = "assistant"
 piRole Tool = "toolResult"
 piRole System = "user"
+
+piZeroUsage :: Value
+piZeroUsage =
+  object
+    [ "input" .= (0 :: Int)
+    , "output" .= (0 :: Int)
+    , "cacheRead" .= (0 :: Int)
+    , "cacheWrite" .= (0 :: Int)
+    , "reasoning" .= (0 :: Int)
+    , "totalTokens" .= (0 :: Int)
+    , "cost"
+        .= object
+          [ "input" .= (0 :: Int)
+          , "output" .= (0 :: Int)
+          , "cacheRead" .= (0 :: Int)
+          , "cacheWrite" .= (0 :: Int)
+          , "total" .= (0 :: Int)
+          ]
+    ]
 
 messageText :: LLMMessage -> Text
 messageText = Text.concat . fmap contentPartText . messageContent
