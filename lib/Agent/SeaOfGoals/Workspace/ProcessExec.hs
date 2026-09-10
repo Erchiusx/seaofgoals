@@ -38,7 +38,9 @@ import System.Exit
   ( ExitCode (..)
   )
 import System.IO
-  ( hIsEOF
+  ( Handle
+  , hClose
+  , hIsEOF
   )
 import System.Process
   ( CreateProcess (..)
@@ -54,6 +56,7 @@ data ProcessExecSpec = ProcessExecSpec
   , processExecCwd :: Maybe FilePath
   , processExecEnv :: Maybe [(String, String)]
   , processExecTimeout :: ExecTimeout
+  , processExecStdin :: Maybe ByteString
   }
   deriving stock (Eq, Show)
 
@@ -81,8 +84,10 @@ runProcessExec spec =
     done <- newEmptyMVar
     timedOutRef <- newIORef False
     let process = mkProcess command args
-    (_, Just stdoutHandle, Just stderrHandle, processHandle) <-
-      createProcess process{std_out = CreatePipe, std_err = CreatePipe}
+    (Just stdinHandle, Just stdoutHandle, Just stderrHandle, processHandle) <-
+      createProcess
+        process{std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe}
+    writeProcessInput stdinHandle (processExecStdin spec)
     _ <-
       forkIO $ do
         stdoutBytes <- ByteString.hGetContents stdoutHandle
@@ -110,9 +115,14 @@ runProcessExec spec =
             }
 
   runProcess command args = do
-    (_, Just stdoutHandle, Just stderrHandle, processHandle) <-
+    (Just stdinHandle, Just stdoutHandle, Just stderrHandle, processHandle) <-
       createProcess
-        (mkProcess command args){std_out = CreatePipe, std_err = CreatePipe}
+        (mkProcess command args)
+          { std_in = CreatePipe
+          , std_out = CreatePipe
+          , std_err = CreatePipe
+          }
+    writeProcessInput stdinHandle (processExecStdin spec)
     stdoutBytes <- ByteString.hGetContents stdoutHandle
     stderrBytes <- ByteString.hGetContents stderrHandle
     exitCode <- waitForProcess processHandle
@@ -150,8 +160,10 @@ runProcessExecWithStdoutLineSink spec stdoutLineSink =
     done <- newEmptyMVar
     timedOutRef <- newIORef False
     let process = mkProcess command args
-    (_, Just stdoutHandle, Just stderrHandle, processHandle) <-
-      createProcess process{std_out = CreatePipe, std_err = CreatePipe}
+    (Just stdinHandle, Just stdoutHandle, Just stderrHandle, processHandle) <-
+      createProcess
+        process{std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe}
+    writeProcessInput stdinHandle (processExecStdin spec)
     stdoutRef <- newIORef []
     stderrDone <- newEmptyMVar
     _ <-
@@ -186,9 +198,14 @@ runProcessExecWithStdoutLineSink spec stdoutLineSink =
             }
 
   runStreamingProcess command args sink = do
-    (_, Just stdoutHandle, Just stderrHandle, processHandle) <-
+    (Just stdinHandle, Just stdoutHandle, Just stderrHandle, processHandle) <-
       createProcess
-        (mkProcess command args){std_out = CreatePipe, std_err = CreatePipe}
+        (mkProcess command args)
+          { std_in = CreatePipe
+          , std_out = CreatePipe
+          , std_err = CreatePipe
+          }
+    writeProcessInput stdinHandle (processExecStdin spec)
     stdoutRef <- newIORef []
     stderrDone <- newEmptyMVar
     _ <-
@@ -221,6 +238,11 @@ runProcessExecWithStdoutLineSink spec stdoutLineSink =
       { cwd = processExecCwd spec
       , env = processExecEnv spec
       }
+
+writeProcessInput :: Handle -> Maybe ByteString -> IO ()
+writeProcessInput handle maybeInput = do
+  maybe (pure ()) (ByteString.hPut handle) maybeInput
+  hClose handle
 
 toOutcome
   :: Bool

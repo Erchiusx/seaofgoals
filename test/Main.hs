@@ -554,8 +554,8 @@ goalContextPreloadTest = do
   automaticPlan <-
     preloadGoalContextWithPlanDetailed futureConfig Nothing root "Planned"
   assertEqual
-    "automatic preload selection still respects its file limit"
-    (goalContextPreloadMaxFiles futureConfig)
+    "automatic preload selection is not truncated by the default"
+    (Set.size (Set.fromList plannedPaths))
     (Set.size (preloadedGoalContextReads automaticPlan))
   unsafePreloaded <-
     preloadGoalContextWithPlanDetailed
@@ -685,6 +685,7 @@ processExecStreamingStdoutTest = do
         , processExecCwd = Nothing
         , processExecEnv = Nothing
         , processExecTimeout = ExecNoTimeout
+        , processExecStdin = Nothing
         }
       (\line -> modifyIORef' linesRef (<> [line]))
   observedLines <- readIORef linesRef

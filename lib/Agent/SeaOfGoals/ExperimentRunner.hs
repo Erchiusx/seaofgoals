@@ -372,7 +372,11 @@ loadExperimentContext apiKey prompt = do
         "\n\n"
         ( filter
             (not . Text.null)
-            [effectiveBaseSystemPrompt, skillContext, workflowPrompt]
+            [ effectiveBaseSystemPrompt
+            , "In one model response, you may return multiple independent tool calls. The harness executes tool calls from the same response in parallel. Return independent reads or writes together when they do not depend on each other; use separate responses when one operation depends on the result of another."
+            , skillContext
+            , workflowPrompt
+            ]
         )
   pure
     ExperimentContext

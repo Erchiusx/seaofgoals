@@ -29,12 +29,15 @@ import Agent.SeaOfGoals.Trace
       , UserMessageObserved
       )
   )
+import Agent.SeaOfGoals.Workspace.Bwrap.Command qualified as BwrapCommand
 import Agent.SeaOfGoals.Workspace.ProcessExec
   ( ProcessExecSpec (..)
   , runProcessExecWithStdoutLineSink
   )
 import Agent.SeaOfGoals.Workspace.Sandbox
-  ( ExecTimeout (..)
+  ( BindMode (..)
+  , ExecSpec (..)
+  , ExecTimeout (..)
   , SandboxExecOutcome (..)
   )
 import Control.Exception (SomeException, try)
@@ -56,7 +59,7 @@ import System.Directory
   , getCurrentDirectory
   )
 import System.Environment (lookupEnv)
-import System.FilePath ((</>))
+import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.Process (readProcess)
 
 piExpectedVersion :: Text
@@ -69,6 +72,7 @@ data PiProcessConfig = PiProcessConfig
   , piProcessSdkRunner :: Maybe FilePath
   , piProcessModel :: Maybe Text
   , piProcessTimeout :: ExecTimeout
+  , piProcessBwrapBinary :: Maybe FilePath
   }
   deriving stock (Eq, Show)
 
@@ -85,6 +89,8 @@ defaultPiProcessConfig = do
   home <- lookupEnv "HOME"
   workingDirectory <- getCurrentDirectory
   pathBinary <- findExecutable "pi"
+  nodeBinary <- findExecutable "node"
+  bwrapBinary <- findExecutable "bwrap"
   let localBinary =
         (\directory -> directory </> "development/pi/packages/coding-agent/dist/cli.js")
           <$> home
@@ -101,13 +107,14 @@ defaultPiProcessConfig = do
       { piProcessBinary = binary
       , piProcessExtension =
           if extensionExists then Just extensionCandidate else Nothing
-      , piProcessNodeBinary = "node"
+      , piProcessNodeBinary = maybe "node" id nodeBinary
       , piProcessSdkRunner =
           if extensionExists
             then Just (workingDirectory </> "pi/sog-sdk-runner.mjs")
             else Nothing
       , piProcessModel = Nothing
       , piProcessTimeout = ExecNoTimeout
+      , piProcessBwrapBinary = bwrapBinary
       }
 
 loadPiProcessConfigFromEnv :: IO PiProcessConfig
@@ -118,6 +125,7 @@ loadPiProcessConfigFromEnv = do
   maybeNode <- lookupEnv "SOG_PI_NODE"
   maybeSdkRunner <- lookupEnv "SOG_PI_SDK_RUNNER"
   maybeModel <- lookupEnv "SOG_PI_MODEL"
+  maybeBwrap <- lookupEnv "SOG_BWRAP"
   pure
     defaults
       { piProcessBinary = maybe (piProcessBinary defaults) id maybeBinary
@@ -125,6 +133,10 @@ loadPiProcessConfigFromEnv = do
       , piProcessNodeBinary = maybe (piProcessNodeBinary defaults) id maybeNode
       , piProcessSdkRunner = maybe (piProcessSdkRunner defaults) Just maybeSdkRunner
       , piProcessModel = Text.pack <$> maybeModel
+      , piProcessBwrapBinary =
+          case maybeBwrap of
+            Just value | not (null value) -> Just value
+            _ -> piProcessBwrapBinary defaults
       }
 
 runPiProcess
@@ -167,6 +179,7 @@ runPiProcess config eventSink goalId workspace prompt = do
           , processExecCwd = Just workspace
           , processExecEnv = Nothing
           , processExecTimeout = piProcessTimeout config
+          , processExecStdin = Nothing
           }
         (emitPiEvent eventSink goalId)
     let result =
@@ -209,13 +222,14 @@ runPiSdkProcess config eventSink goalId workspace controlRoot prompt history = d
       requestPath = controlRoot </> "pi-sdk-request.json"
       request =
         object
-          [ "cwd" .= workspace
-          , "agentDir" .= controlRoot
+          [ "cwd" .= ("/workspace" :: Text)
+          , "agentDir" .= ("/pi-agent" :: Text)
           , "prompt" .= prompt
           , "model" .= piProcessModel config
           , "messages" .= fmap piMessage (filter isPiHistoryItem history)
           ]
     createDirectoryIfMissing True controlRoot
+    createDirectoryIfMissing True (controlRoot </> "pi-agent")
     LazyByteString.writeFile requestPath (Aeson.encode request)
     case piProcessSdkRunner config of
       Nothing -> pure (sdkFailure "Pi SDK runner is not configured")
@@ -230,10 +244,12 @@ runPiSdkProcess config eventSink goalId workspace controlRoot prompt history = d
         outcome <-
           runProcessExecWithStdoutLineSink
             ProcessExecSpec
-              { processExecArgv = [piProcessNodeBinary config, runner, requestPath]
-              , processExecCwd = Just workspace
+              { processExecArgv = sdkCommand config runner workspace
+              , processExecCwd = Nothing
               , processExecEnv = Nothing
               , processExecTimeout = piProcessTimeout config
+              , processExecStdin =
+                  Just (LazyByteString.toStrict (Aeson.encode request) <> "\n")
               }
             (emitPiEvent eventSink goalId)
         let result =
@@ -253,6 +269,59 @@ runPiSdkProcess config eventSink goalId workspace controlRoot prompt history = d
               (piProcessStderr result)
           )
         pure result
+
+  sdkCommand config runner workspace =
+    case piProcessBwrapBinary config of
+      Nothing ->
+        [ "sh"
+        , "-c"
+        , "printf '%s\\n' 'bwrap is required for Pi SDK execution' >&2; exit 126"
+        ]
+      Just bwrap ->
+        BwrapCommand.bwrapCommand
+          (BwrapCommand.Config bwrap)
+          BwrapCommand.ExecutionView
+            { BwrapCommand.viewHostRoot = BwrapCommand.ReadOnlyHostRoot
+            , BwrapCommand.viewMounts =
+                [ BwrapCommand.Mount workspace "/workspace" BindReadWrite
+                , BwrapCommand.Mount
+                    (controlRoot </> "pi-agent")
+                    "/pi-agent"
+                    BindReadWrite
+                , BwrapCommand.Mount
+                    (takeDirectory runner)
+                    "/sog-pi"
+                    BindReadOnly
+                , BwrapCommand.Mount
+                    (piRootFromBinary (piProcessBinary config))
+                    "/pi-root"
+                    BindReadOnly
+                , BwrapCommand.Mount
+                    (takeDirectory (piProcessNodeBinary config))
+                    "/node-bin"
+                    BindReadOnly
+                ]
+            , BwrapCommand.viewEnv = [("SOG_PI_ROOT", "/pi-root")]
+            , BwrapCommand.viewUnsetEnv = []
+            , BwrapCommand.viewDefaultCwd = "/workspace"
+            }
+          ExecSpec
+            { execArgv =
+                [ "/node-bin/" <> Text.pack (takeFileName (piProcessNodeBinary config))
+                , "/sog-pi/sog-sdk-runner.mjs"
+                ]
+            , execCwd = "/workspace"
+            , execEnv = []
+            , execTimeout = piProcessTimeout config
+            }
+
+  piRootFromBinary binary =
+    takeDirectory
+      ( takeDirectory
+          ( takeDirectory
+              (takeDirectory binary)
+          )
+      )
 
   decode = TextEncoding.decodeUtf8With lenientDecode
   sdkFailure message = PiProcessResult 126 False "" message

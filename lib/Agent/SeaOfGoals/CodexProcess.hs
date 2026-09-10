@@ -175,6 +175,7 @@ runCodexProcessWithControlRoot config eventSink goalId workspaceRoot controlRoot
         , processExecCwd = Nothing
         , processExecEnv = Nothing
         , processExecTimeout = codexProcessTimeout config
+        , processExecStdin = Nothing
         }
       (emitCodexRawEvent eventSink goalId)
   lastMessage <- readTextFileIfExists lastMessagePath

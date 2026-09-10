@@ -72,4 +72,5 @@ runBwrapCommand config handle spec =
       , processExecCwd = Nothing
       , processExecEnv = Nothing
       , processExecTimeout = execTimeout spec
+      , processExecStdin = Nothing
       }

@@ -88,7 +88,7 @@ defaultGoalContextPreloadConfig :: GoalContextPreloadConfig
 defaultGoalContextPreloadConfig =
   GoalContextPreloadConfig
     { goalContextPreloadEnabled = False
-    , goalContextPreloadMaxFiles = 16
+    , goalContextPreloadMaxFiles = 0
     , goalContextPreloadMaxBytesPerFile = 12000
     , goalContextPreloadMaxDirectoryEntries = 300
     }
@@ -175,7 +175,10 @@ preloadGoalContextWithPlanDetailed config maybePlannedFiles workspaceRoot prompt
         candidates = selectGoalFiles maybePlannedFiles prompt files
         selected = case maybePlannedFiles of
           Just _ -> candidates
-          Nothing -> take (goalContextPreloadMaxFiles config) candidates
+          Nothing
+            | goalContextPreloadMaxFiles config > 0 ->
+                take (goalContextPreloadMaxFiles config) candidates
+            | otherwise -> candidates
       renderedFiles <- mapM (renderFile workspaceRoot config) selected
       pure
         PreloadedGoalContext

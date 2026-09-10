@@ -62,6 +62,7 @@ runProcessWithTimeout handle spec =
       , processExecCwd = Just (resolveCwd handle spec)
       , processExecEnv = sandboxEnv spec
       , processExecTimeout = execTimeout spec
+      , processExecStdin = Nothing
       }
 
 resolveCwd :: ProcessSandboxHandle -> ExecSpec -> FilePath
