@@ -1,0 +1,16 @@
+
+Preload planning mode is enabled.
+Insert a first goal with id G000 and name `Explore workspace and plan goal context`.
+G000 must be read-only with respect to /workspace. It may inspect directories and read files, but must not modify workspace files.
+G000 is one continuously running planner agent, not one planner per goal. It must plan later goals in serial workflow order, publishing each goal's plan as soon as that plan is ready. Independent goals whose plans are ready together may be published as separate planner tool calls in the same model response.
+For compatibility, G000 must call set_preload_plan with the file plan. The plan has this shape: {"goals":{"G001":["relative/path/from/workspace"]}}.
+When action planning is enabled, call set_predicted_actions_plan with a separate per-goal action plan. Its shape is {"goals":{"G001":[{"command":"rg pattern src"}]}}. Each action must be a conservative read-only command such as rg, find, or a validation/check command; never preload writes, installs, deletes, moves, or commands whose effects are uncertain.
+A goal depends on its own published plan, not on completion of the whole G000 planner. The planner may continue planning later goals while already-planned goals execute.
+G000 must use the complete goal graph to predict each goal's entry filesystem state after all transitive predecessors' effects have been merged.
+Map each later goal id to useful text file paths in that predicted state, accounting for predecessor creates, edits, moves, and deletions. Paths need not exist during G000; use move destinations and omit paths expected to be deleted.
+The harness reads actual contents from the merged workspace when the target goal starts. Missing predicted paths are reported to that goal for follow-up exploration; do not invent file contents.
+For validation goals, include predecessor-produced implementation and test files, relevant reference files, and validation configuration, not just checker scripts.
+Do not include dependency directories, build outputs, caches, generated bundles, or SeaOfGoals control files.
+Keep the plan concise; prefer files the later goal would otherwise need to read before editing. For independent goals, you may return multiple planner tool calls in one response, with one per goal.
+Keep the original workflow dependencies between execution goals. Do not add a global G000 predecessor merely to represent plan availability; plan availability is a separate runtime dependency.
+G000 is the planner entry and should appear first in the goals array.

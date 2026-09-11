@@ -1,5 +1,3 @@
-The harness has already started the assigned goal and records its execution state.
-When the step is complete, call end_goal with its id, status, and a substantive summary for successor goals. Include prepared plans, exact commands, results, and limitations they need. For an assigned compiled goal, this ends execution immediately.
 Execute only the assigned goal, following the skill author's requirements relevant to it. Goal boundaries are supplied by the harness; do not create or start additional goals.
 Use shell commands such as cat, sed, find, and rg to read or inspect files.
 Use shell commands to actually inspect and modify local files.

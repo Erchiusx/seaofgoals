@@ -17,9 +17,7 @@ where
 
 import Agent.SeaOfGoals.LLM
   ( LLMContentPart (TextPart)
-  , LLMInputItem (MessageInput, ToolCallInput, ToolResultInput)
-  , LLMMessage (..)
-  , LLMRole (Assistant)
+  , LLMInputItem (ToolCallInput, ToolResultInput)
   , ToolCall (..)
   , ToolResult (..)
   )
@@ -232,34 +230,19 @@ renderPreloadedGoalContextHistory
   -> [LLMInputItem]
 renderPreloadedGoalContextHistory config files selected renderedFiles
   | null selected =
-      [ MessageInput
-          LLMMessage
-            { messageRole = Assistant
-            , messageContent =
-                [ TextPart
-                    "I have completed the initial workspace exploration for this goal. The workspace has no selected preloaded files, so I will continue from the file listing already observed."
-                ]
-            }
+      [ ToolCallInput listingCall
+      , ToolResultInput listingResult
       ]
   | otherwise =
       [ ToolCallInput listingCall
       , ToolResultInput listingResult
-      , ToolCallInput filesCall
-      , ToolResultInput filesResult
-      , MessageInput
-          LLMMessage
-            { messageRole = Assistant
-            , messageContent =
-                [ TextPart
-                    "I have completed the initial workspace exploration for this goal. I will use the observed file listing and preloaded file contents before deciding whether any extra reads are necessary."
-                ]
-            }
       ]
+        <> concatMap (uncurry renderedFileHistory) (zip [1 :: Int ..] renderedFiles)
  where
   listingCall =
     ToolCall
-      { toolCallId = "sog_preload_listing"
-      , toolCallName = "shell"
+      { toolCallId = "call_listing"
+      , toolCallName = "bash"
       , toolCallArguments =
           object
             [ "command"
@@ -288,45 +271,26 @@ renderPreloadedGoalContextHistory config files selected renderedFiles
               )
           ]
       }
-  filesCall =
-    ToolCall
-      { toolCallId = "sog_preload_files"
-      , toolCallName = "shell"
-      , toolCallArguments =
-          object
-            [ "command"
-                .= Text.intercalate
-                  " && "
-                  (fmap catCommand selected)
-            ]
-      }
-  filesResult =
-    ToolResult
-      { toolResultCallId = toolCallId filesCall
-      , toolResultName = Just (toolCallName filesCall)
-      , toolResultContent =
-          [ TextPart
-              ( Text.unlines
-                  [ "exit_code: 0"
-                  , "timed_out: false"
-                  , "stdout:"
-                  , Text.intercalate "\n" (fmap renderPreloadedFile renderedFiles)
-                  , "stderr:"
+  renderedFileHistory index (relativePath, content) =
+    let call =
+          ToolCall
+            { toolCallId = "call_read_" <> Text.pack (show index)
+            , toolCallName = "read"
+            , toolCallArguments =
+                object
+                  [ "path" .= relativePath
+                  , "offset" .= (1 :: Int)
+                  , "limit" .= (max 1 (Text.length content) :: Int)
                   ]
-              )
-          ]
-      }
-  catCommand relativePath =
-    "printf '%s\\n' "
-      <> shellSingleQuote ("BEGIN FILE " <> Text.pack relativePath)
-      <> " && cat "
-      <> shellSingleQuote (Text.pack relativePath)
-      <> " && printf '%s\\n' "
-      <> shellSingleQuote ("END FILE " <> Text.pack relativePath)
-
-shellSingleQuote :: Text -> Text
-shellSingleQuote text =
-  "'" <> Text.replace "'" "'\"'\"'" text <> "'"
+            }
+     in [ ToolCallInput call
+        , ToolResultInput
+            ToolResult
+              { toolResultCallId = toolCallId call
+              , toolResultName = Just (toolCallName call)
+              , toolResultContent = [TextPart content]
+              }
+        ]
 
 selectGoalFiles :: Maybe [FilePath] -> Text -> [FilePath] -> [FilePath]
 selectGoalFiles maybePlannedFiles prompt files =

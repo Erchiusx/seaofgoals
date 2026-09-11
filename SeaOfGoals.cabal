@@ -48,6 +48,7 @@ library
         Agent.SeaOfGoals.LLM.Backends.GPT
         Agent.SeaOfGoals.LLM.Backends.Gemini
         Agent.SeaOfGoals.PiProcess
+        Agent.SeaOfGoals.PredictedActions
         Agent.SeaOfGoals.Scheduling.Agentic
         Agent.SeaOfGoals.Scheduling.Compiled
         Agent.SeaOfGoals.Scheduling.ConcurrentChase

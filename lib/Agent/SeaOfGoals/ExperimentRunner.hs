@@ -66,6 +66,13 @@ import Agent.SeaOfGoals.PiProcess
   , runPiProcess
   , runPiSdkProcess
   )
+import Agent.SeaOfGoals.PredictedActions
+  ( PredictedActionsPlan (..)
+  , loadPredictedActionsPlanFromEnv
+  , mergePredictedActionsPlans
+  , readPredictedActionsPlanFile
+  , runPredictedActions
+  )
 import Agent.SeaOfGoals.Scheduling.Agentic
   ( AgentRunResult (..)
   , GoalGraph (..)
@@ -81,6 +88,7 @@ import Agent.SeaOfGoals.Scheduling.ConcurrentChase
   , ConcurrentChaseResult (..)
   , ConcurrentChaseRunner (..)
   , runConcurrentChase
+  , runConcurrentChaseWithPlanner
   )
 import Agent.SeaOfGoals.Scheduling.GraphChase
   ( ChaseState (..)
@@ -182,6 +190,7 @@ import Data.Text.Encoding qualified as TextEncoding
 import Data.Text.IO qualified as TextIO
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
+import Data.Vector qualified as Vector
 import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
@@ -227,10 +236,12 @@ data ExperimentContext = ExperimentContext
   , experimentWorkflowSpec :: Maybe WorkflowSpec
   , experimentCodexHistoryHandoff :: Bool
   , experimentHarnessHistoryHandoff :: Bool
+  , experimentPiHistoryHandoff :: Bool
   , experimentConcurrentWorkspaceMode :: ConcurrentWorkspaceMode
   , experimentGoalContextPreloadConfig :: GoalContextPreloadConfig
   , experimentGoalContextPreloadPlan :: GoalContextPreloadPlan
   , experimentDynamicGoalContextPreloadPlan :: IORef GoalContextPreloadPlan
+  , experimentPredictedActionsPlan :: PredictedActionsPlan
   , experimentHarnessLifecycle :: Bool
   }
 
@@ -317,9 +328,11 @@ loadExperimentContext apiKey prompt = do
   workflowSpec <- loadWorkflowSpecFromEnv
   codexHistoryHandoff <- loadCodexHistoryHandoff
   harnessHistoryHandoff <- loadHarnessHistoryHandoff
+  piHistoryHandoff <- loadPiHistoryHandoff
   concurrentWorkspaceMode <- loadConcurrentWorkspaceMode
   goalContextPreloadConfig <- loadGoalContextPreloadConfigFromEnv
   goalContextPreloadPlan <- loadGoalContextPreloadPlanFromEnv
+  predictedActionsPlan <- loadPredictedActionsPlanFromEnv
   harnessLifecycle <- loadHarnessLifecycleMode
   dynamicGoalContextPreloadPlan <- newIORef (GoalContextPreloadPlan Map.empty)
   createDirectoryIfMissing True controlRoot
@@ -395,10 +408,12 @@ loadExperimentContext apiKey prompt = do
       , experimentWorkflowSpec = workflowSpec
       , experimentCodexHistoryHandoff = codexHistoryHandoff
       , experimentHarnessHistoryHandoff = harnessHistoryHandoff
+      , experimentPiHistoryHandoff = piHistoryHandoff
       , experimentConcurrentWorkspaceMode = concurrentWorkspaceMode
       , experimentGoalContextPreloadConfig = goalContextPreloadConfig
       , experimentGoalContextPreloadPlan = goalContextPreloadPlan
       , experimentDynamicGoalContextPreloadPlan = dynamicGoalContextPreloadPlan
+      , experimentPredictedActionsPlan = predictedActionsPlan
       , experimentHarnessLifecycle = harnessLifecycle
       }
 
@@ -448,13 +463,20 @@ runSinglePrompt context = do
           ("codex process failed with exit code " <> show (codexProcessExitCode result))
     PiAgentRunner -> do
       workspaceRoot <- normalise <$> getCurrentDirectory
+      let piConfig =
+            (experimentPiProcessConfig context)
+              { piProcessModel =
+                  Just (requestModel (experimentRequestTemplate context))
+              }
       result <-
-        runPiProcess
-          (experimentPiProcessConfig context)
+        runPiSdkProcess
+          piConfig
           (experimentEventSink context)
           Nothing
           workspaceRoot
-          (piPrompt context (experimentUserPromptText context))
+          (experimentControlRoot context </> "single")
+          (experimentUserPromptText context)
+          []
       when (piProcessExitCode result /= 0) $
         fail ("pi process failed with exit code " <> show (piProcessExitCode result))
   putStrLn ("Trace written to " <> experimentTracePath context)
@@ -493,8 +515,13 @@ runSerialPromptWithGraph context compiledGraph = do
 runConcurrentPromptWithGraph :: ExperimentContext -> CompiledGoalGraph -> IO ()
 runConcurrentPromptWithGraph context compiledGraph = do
   requireConcurrentWorkspaceRemap
+  incrementalPlanner <- loadIncrementalPlanner
   let
-    goalGraph = compiledGraphToGoalGraph compiledGraph
+    originalGoalGraph = compiledGraphToGoalGraph compiledGraph
+    goalGraph =
+      if incrementalPlanner
+        then detachPlannerEdges "G000" originalGoalGraph
+        else originalGoalGraph
     chaseConfig = configConcurrentChase (experimentConfig context)
   workspaceRoot <- normalise <$> getCurrentDirectory
   recordDagSnapshot
@@ -511,37 +538,72 @@ runConcurrentPromptWithGraph context compiledGraph = do
   acceptedGenerationRef <- newIORef 0
   runBaseGenerationsRef <- newIORef Map.empty
   result <-
-    runConcurrentChase
-      ConcurrentChaseRunner
-        { concurrentChaseMaxParallelism =
-            concurrentChaseConfigMaxParallelism chaseConfig
-        , concurrentChaseMaxReplans =
-            concurrentChaseConfigMaxReplans chaseConfig
-        , concurrentChaseRunGoal =
-            runConcurrentGoal
-              context
-              goalGraph
-              workspaceRoot
-              summariesRef
-              acceptedHistoriesRef
-              pendingHistoriesRef
-              harnessHistoriesRef
-              acceptedGenerationRef
-              runBaseGenerationsRef
-              runsRef
-        , concurrentChaseMergeGoal =
-            mergeConcurrentGoal
-              context
-              goalGraph
-              workspaceRoot
-              summariesRef
-              acceptedHistoriesRef
-              pendingHistoriesRef
-              acceptedEffectsRef
-              acceptedGenerationRef
-              runBaseGenerationsRef
-        }
-      goalGraph
+    ( if incrementalPlanner
+        then
+          runConcurrentChaseWithPlanner
+            ConcurrentChaseRunner
+              { concurrentChaseMaxParallelism = concurrentChaseConfigMaxParallelism chaseConfig
+              , concurrentChaseMaxReplans = concurrentChaseConfigMaxReplans chaseConfig
+              , concurrentChaseRunGoal =
+                  runConcurrentGoal
+                    context
+                    goalGraph
+                    workspaceRoot
+                    summariesRef
+                    acceptedHistoriesRef
+                    pendingHistoriesRef
+                    harnessHistoriesRef
+                    acceptedGenerationRef
+                    runBaseGenerationsRef
+                    runsRef
+              , concurrentChaseMergeGoal =
+                  mergeConcurrentGoal
+                    context
+                    goalGraph
+                    workspaceRoot
+                    summariesRef
+                    acceptedHistoriesRef
+                    pendingHistoriesRef
+                    acceptedEffectsRef
+                    acceptedGenerationRef
+                    runBaseGenerationsRef
+              }
+            goalGraph
+            (GoalNodeId "G000")
+            (goalPlanReady context)
+        else
+          runConcurrentChase
+            ConcurrentChaseRunner
+              { concurrentChaseMaxParallelism =
+                  concurrentChaseConfigMaxParallelism chaseConfig
+              , concurrentChaseMaxReplans =
+                  concurrentChaseConfigMaxReplans chaseConfig
+              , concurrentChaseRunGoal =
+                  runConcurrentGoal
+                    context
+                    goalGraph
+                    workspaceRoot
+                    summariesRef
+                    acceptedHistoriesRef
+                    pendingHistoriesRef
+                    harnessHistoriesRef
+                    acceptedGenerationRef
+                    runBaseGenerationsRef
+                    runsRef
+              , concurrentChaseMergeGoal =
+                  mergeConcurrentGoal
+                    context
+                    goalGraph
+                    workspaceRoot
+                    summariesRef
+                    acceptedHistoriesRef
+                    pendingHistoriesRef
+                    acceptedEffectsRef
+                    acceptedGenerationRef
+                    runBaseGenerationsRef
+              }
+            goalGraph
+    )
   case result of
     Left err -> fail ("concurrent scheduler failed: " <> Text.unpack err)
     Right schedulerResult -> do
@@ -554,6 +616,56 @@ runConcurrentPromptWithGraph context compiledGraph = do
               )
         )
       putStrLn ("Trace written to " <> experimentTracePath context)
+
+loadIncrementalPlanner :: IO Bool
+loadIncrementalPlanner = do
+  value <- lookupEnv "SOG_INCREMENTAL_PLANNER"
+  pure (value `elem` [Just "1", Just "true", Just "yes"])
+
+detachPlannerEdges :: Text -> GoalGraph -> GoalGraph
+detachPlannerEdges plannerId graph =
+  graph
+    { goalGraphEdges =
+        Set.filter
+          (\(from, _to) -> unGoalNodeId from /= plannerId)
+          (goalGraphEdges graph)
+    }
+
+goalPlanReady :: ExperimentContext -> GoalNodeId -> IO Bool
+goalPlanReady context goalId
+  | unGoalNodeId goalId == "G000" = pure True
+  | otherwise = do
+      dynamicPlan <- readIORef (experimentDynamicGoalContextPreloadPlan context)
+      let planPath = experimentControlRoot context </> "predicted-actions-plan.json"
+      predictedReady <-
+        planContainsGoal planPath (experimentPredictedActionsPlan context) goalId
+      preloadReady <- goalPreloadPlanContainsGoal context goalId
+      let dynamicReady =
+            case dynamicPlan of
+              GoalContextPreloadPlan goals -> Map.member (unGoalNodeId goalId) goals
+      pure (predictedReady || preloadReady || dynamicReady)
+
+goalPreloadPlanContainsGoal :: ExperimentContext -> GoalNodeId -> IO Bool
+goalPreloadPlanContainsGoal context goalId = do
+  let path = experimentControlRoot context </> "preload-plan.json"
+  exists <- doesFileExist path
+  if not exists
+    then pure False
+    else do
+      result <- readGoalContextPreloadPlanFile path
+      pure $ case result of
+        Left _ -> False
+        Right (GoalContextPreloadPlan goals) ->
+          Map.member (unGoalNodeId goalId) goals
+
+planContainsGoal :: FilePath -> PredictedActionsPlan -> GoalNodeId -> IO Bool
+planContainsGoal path fallback goalId = do
+  exists <- doesFileExist path
+  plan <-
+    if exists
+      then either (const (pure fallback)) pure =<< readPredictedActionsPlanFile path
+      else pure fallback
+  pure (Map.member (unGoalNodeId goalId) (predictedActionsPlanGoals plan))
 
 requireConcurrentWorkspaceRemap :: IO ()
 requireConcurrentWorkspaceRemap = do
@@ -892,17 +1004,20 @@ runPiGoalProcess context workspaceRoot node prompt = do
 
 piPrompt :: ExperimentContext -> Text -> Text
 piPrompt context prompt =
-  Text.intercalate
-    "\n\n"
-    [ "You are executing one SeaOfGoals task node inside an externally managed workspace."
-    , "Work only in the current workspace. Follow the assigned goal exactly and do not reorder workflow goals."
-    , "If the initial history contains completed preload tool calls and results, treat those reads as already performed for the current workspace. Reuse their file listing and contents instead of repeating the same reads; only read again when a file is missing, changed, or required information was not preloaded."
-    , "SeaOfGoals instructions:"
-    , experimentSystemPromptText context
-    , "Task prompt:"
-    , prompt
-    , "When the task is complete, stop and report a concise summary."
-    ]
+  let base =
+        Text.replace
+          "{{task_prompt}}"
+          prompt
+          ( Text.replace
+              "{{system_prompt}}"
+              (experimentSystemPromptText context)
+              $(embedTextFile "lib/Agent/SeaOfGoals/Prompts/pi-goal-prompt.txt")
+          )
+   in if "Goal id: G000" `Text.isInfixOf` prompt
+        then
+          base
+            <> "\n\nYou are the single G000 planner. Publish each later goal's file plan and predicted read-only action plan separately, in serial workflow order, as soon as that goal's plan is ready. Independent goals whose plans are ready together may be published as separate planner tool calls in the same model response. Continue planning later goals while the scheduler may execute already-published goals. Do not wait until the end to publish one aggregate plan, and do not publish a plan for a later goal before the earlier goal's plan."
+        else base
 
 piGoalStatus :: PiProcessResult -> Text
 piGoalStatus result
@@ -949,16 +1064,14 @@ piEndGoalResult result =
 
 codexPrompt :: ExperimentContext -> Text -> Text
 codexPrompt context prompt =
-  Text.intercalate
-    "\n\n"
-    [ "You are executing one SeaOfGoals task node inside an externally managed sandbox."
-    , "Use the instructions below as the task-specific developer guidance for this process. Work only in the current workspace unless the task explicitly requires inspection elsewhere."
-    , "SeaOfGoals instructions:"
-    , experimentSystemPromptText context
-    , "Task prompt:"
-    , prompt
-    , "When the task is finished, reply with a concise summary for dependent goals."
-    ]
+  Text.replace
+    "{{task_prompt}}"
+    prompt
+    ( Text.replace
+        "{{system_prompt}}"
+        (experimentSystemPromptText context)
+        $(embedTextFile "lib/Agent/SeaOfGoals/Prompts/codex-goal-prompt.txt")
+    )
 
 preloadGoalContextForWorkspace
   :: ExperimentContext
@@ -978,11 +1091,37 @@ preloadGoalContextForWorkspace context maybeGoalId workspaceRoot prompt = do
             dynamicPlan
         plannedFiles =
           maybeGoalId >>= \goalId -> Map.lookup (unGoalNodeId goalId) plan
-      preloadGoalContextWithPlanDetailed
-        (experimentGoalContextPreloadConfig context)
-        plannedFiles
-        workspaceRoot
-        prompt
+      preloaded <-
+        preloadGoalContextWithPlanDetailed
+          (experimentGoalContextPreloadConfig context)
+          plannedFiles
+          workspaceRoot
+          prompt
+      predictedFileExists <-
+        doesFileExist (experimentControlRoot context </> "predicted-actions-plan.json")
+      predictedFilePlan <-
+        if predictedFileExists
+          then
+            either (fail . ("invalid predicted actions plan: " <>)) pure
+              =<< readPredictedActionsPlanFile
+                (experimentControlRoot context </> "predicted-actions-plan.json")
+          else pure (PredictedActionsPlan Map.empty)
+      let
+        predictedPlan =
+          mergePredictedActionsPlans
+            (experimentPredictedActionsPlan context)
+            predictedFilePlan
+        predicted =
+          maybeGoalId >>= \goalId ->
+            Map.lookup
+              (unGoalNodeId goalId)
+              (predictedActionsPlanGoals predictedPlan)
+      predictedHistory <- runPredictedActions predicted workspaceRoot
+      pure
+        preloaded
+          { preloadedGoalContextHistory =
+              preloadedGoalContextHistory preloaded <> predictedHistory
+          }
 
 historyHandoffReplacesPreload :: ExperimentContext -> Bool
 historyHandoffReplacesPreload context =
@@ -1026,6 +1165,85 @@ recordDynamicPreloadPlanFromControlRoot context controlRoot = do
         modifyIORef'
           (experimentDynamicGoalContextPreloadPlan context)
           (`mergeGoalContextPreloadPlans` plan)
+
+recordPiPlanPublication
+  :: ExperimentContext -> FilePath -> HarnessEvent -> IO ()
+recordPiPlanPublication context controlRoot event =
+  case event of
+    ToolResultObserved{eventToolName = "set_preload_plan", eventResult = result} ->
+      case Text.stripPrefix "SOG_PRELOAD_PLAN:" (piToolResultText result) of
+        Nothing -> pure ()
+        Just planText ->
+          case eitherDecode
+            (LazyByteString.fromStrict (TextEncoding.encodeUtf8 (Text.strip planText))) of
+            Left _ -> pure ()
+            Right plan ->
+              do
+                modifyIORef'
+                  (experimentDynamicGoalContextPreloadPlan context)
+                  (`mergeGoalContextPreloadPlans` plan)
+                experimentEventSink
+                  context
+                  EffectRecorded
+                    { eventEffect =
+                        EffectRecord
+                          { effectKind = "preload_plan_published"
+                          , effectResource = "runtime"
+                          , effectDetail =
+                              Just (Text.intercalate "," (Map.keys (goalContextPreloadPlanGoals plan)))
+                          }
+                    , eventActiveSubgoal = Nothing
+                    }
+    ToolResultObserved
+      { eventToolName = "set_predicted_actions_plan"
+      , eventResult = result
+      } ->
+        case Text.stripPrefix "SOG_PREDICTED_ACTIONS_PLAN:" (piToolResultText result) of
+          Nothing -> pure ()
+          Just planText -> do
+            let path = controlRoot </> "predicted-actions-plan.json"
+            exists <- doesFileExist path
+            old <-
+              if exists
+                then
+                  either (const (pure (PredictedActionsPlan Map.empty))) pure
+                    =<< readPredictedActionsPlanFile path
+                else pure (PredictedActionsPlan Map.empty)
+            case eitherDecode
+              (LazyByteString.fromStrict (TextEncoding.encodeUtf8 (Text.strip planText))) of
+              Left _ -> pure ()
+              Right plan -> do
+                createDirectoryIfMissing True controlRoot
+                LazyByteString.writeFile path (encode (mergePredictedActionsPlans old plan))
+                experimentEventSink
+                  context
+                  EffectRecorded
+                    { eventEffect =
+                        EffectRecord
+                          { effectKind = "predicted_actions_plan_published"
+                          , effectResource = Text.pack path
+                          , effectDetail =
+                              Just (Text.intercalate "," (Map.keys (predictedActionsPlanGoals plan)))
+                          }
+                    , eventActiveSubgoal = Nothing
+                    }
+    _ -> pure ()
+
+piToolResultText :: Text -> Text
+piToolResultText result =
+  case eitherDecode (LazyByteString.fromStrict (TextEncoding.encodeUtf8 result)) of
+    Right (Aeson.Object objectValue) ->
+      case AesonKeyMap.lookup (AesonKey.fromString "content") objectValue of
+        Just (Aeson.Array content) ->
+          case [ text
+               | Aeson.Object part <- Vector.toList content
+               , Just (Aeson.String text) <-
+                   [AesonKeyMap.lookup (AesonKey.fromString "text") part]
+               ] of
+            text : _ -> text
+            [] -> result
+        _ -> result
+    _ -> result
 
 codexGoalStatus :: CodexProcessResult -> Text
 codexGoalStatus result
@@ -1151,7 +1369,7 @@ runConcurrentGoal
               ancestorWorkspace
               taskWorkspace
               node
-              promptWithPreload
+              prompt
               harnessPredecessorHistory
               (preloadedGoalContextHistory preloaded)
               (preloadedGoalContextReads preloaded)
@@ -1324,12 +1542,17 @@ runConcurrentPiGoal
         Just _ ->
           runPiSdkProcess
             (experimentPiProcessConfig context)
-            (experimentEventSink context)
+            ( \event -> do
+                experimentEventSink context event
+                recordPiPlanPublication context controlRoot event
+            )
             (Just (unGoalNodeId (goalNodeId node)))
             taskWorkspace
             controlRoot
             (piPrompt context prompt)
-            (predecessorHistory <> preloadHistory)
+            ( (if experimentPiHistoryHandoff context then predecessorHistory else [])
+                <> preloadHistory
+            )
         Nothing -> runPiGoalProcess context taskWorkspace node prompt
     changedPaths <- workspaceChangedPaths ancestorWorkspace taskWorkspace
     let
@@ -1861,14 +2084,14 @@ serialGoalPrompt
   -> [(GoalNodeId, Text)]
   -> GoalNode
   -> Text
-serialGoalPrompt originalPrompt goalGraph historyHandoff predecessorSummaries predecessorHistories node =
+serialGoalPrompt originalPrompt goalGraph _historyHandoff predecessorSummaries predecessorHistories node =
   Text.intercalate
     "\n\n"
     ( filter
         (not . Text.null)
         [ "Original task:\n" <> originalPrompt
         , renderCompiledGoalGraphForPrompt goalGraph node
-        , renderedSummaries
+        , renderedCompletedPredecessors
         , renderedHistories
         , Text.unlines
             [ "Execute exactly this compiled goal now."
@@ -1880,31 +2103,18 @@ serialGoalPrompt originalPrompt goalGraph historyHandoff predecessorSummaries pr
             , "Use the current workspace and process environment as the source of truth."
             , "If a dependency service is already available through an environment variable, use that value instead of recreating the service or assuming host ports from the original skill text."
             , "Do not call docker unless this goal explicitly requires Docker and the docker command is available."
-            , "Do not read harness trajectory files such as sog-trace.jsonl; they are private experiment records, not task inputs."
-            , "If this goal plans preloaded context, call set_preload_plan exactly once. Every key in that plan must be one of the compiled goal ids listed above, and each key must describe files useful for that exact goal."
             , ""
-            , "The harness has already started this goal. Begin its assigned work directly."
-            , endGoalInstruction
+            , "Begin the assigned work directly. When the assigned work is complete, stop; do not perform extra verification or repeat completed exploration."
             , "Do not start a different goal in this agent loop."
             ]
         ]
     )
  where
-  renderedSummaries
-    | historyHandoff = ""
+  renderedCompletedPredecessors
     | null predecessorSummaries = ""
     | otherwise =
-        Text.unlines
-          ( "Completed predecessor summaries:"
-              : fmap renderSummary predecessorSummaries
-          )
-  renderSummary (goalId, summary) =
-    "- " <> unGoalNodeId goalId <> ": " <> summary
-  endGoalInstruction
-    | historyHandoff =
-        "When this goal is complete, call end_goal with this exact goal id and status. Do not add a summary; successor goals receive the complete goal history."
-    | otherwise =
-        "When this goal is complete, call end_goal with this exact goal id and a concise summary."
+        "Completed predecessor goals in the skill graph: "
+          <> Text.intercalate ", " (fmap (unGoalNodeId . fst) predecessorSummaries)
   renderedHistories
     | null predecessorHistories = ""
     | otherwise =
@@ -2080,6 +2290,18 @@ loadCodexHistoryHandoff = do
 loadHarnessHistoryHandoff :: IO Bool
 loadHarnessHistoryHandoff = do
   maybeValue <- lookupEnv "SOG_HARNESS_HISTORY_HANDOFF"
+  pure
+    ( case fmap Text.toLower (Text.pack <$> maybeValue) of
+        Just "1" -> True
+        Just "true" -> True
+        Just "yes" -> True
+        Just "on" -> True
+        _ -> False
+    )
+
+loadPiHistoryHandoff :: IO Bool
+loadPiHistoryHandoff = do
+  maybeValue <- lookupEnv "SOG_PI_HISTORY_HANDOFF"
   pure
     ( case fmap Text.toLower (Text.pack <$> maybeValue) of
         Just "1" -> True
@@ -2279,6 +2501,7 @@ loadBwrapExperimentToolsAt workspaceRoot controlRoot dynamicPlan harnessLifecycl
   pure
     ( lifecycleTools harnessLifecycle
         <> [ setPreloadPlanTool dynamicPlan
+           , setPredictedActionsPlanTool controlRoot
            , writeFileToolAt normalWorkspaceRoot
            , bwrapShellTool
                BwrapToolBinding
@@ -2293,6 +2516,7 @@ experimentToolsForPathWithLifecycle
 experimentToolsForPathWithLifecycle workspaceRoot dynamicPlan harnessLifecycle =
   lifecycleTools harnessLifecycle
     <> [ setPreloadPlanTool dynamicPlan
+       , setPredictedActionsPlanTool (workspaceRoot <> ".sog")
        , writeFileToolAt workspaceRoot
        , shellToolAt workspaceRoot
        ]
@@ -2374,6 +2598,72 @@ setPreloadPlanTool dynamicPlan =
                       }
                   ]
                 )
+
+setPredictedActionsPlanTool :: FilePath -> ToolSpec
+setPredictedActionsPlanTool controlRoot =
+  objectToolSpec
+    "set_predicted_actions_plan"
+    "Publish a JSON plan of conservative read-only bash actions for later goals. This records control data only and does not modify the workspace. It may be called incrementally; previously published goals are retained."
+    [
+      ( "plan_json"
+      , textSchema
+          "JSON object with shape {\"goals\":{\"G001\":[{\"command\":\"rg pattern src\"}]}}"
+      )
+    ]
+    ["plan_json"]
+    $ \toolCall ->
+      case parseArgs toolCall of
+        Left err -> pure (textResult toolCall err, [])
+        Right args -> do
+          let planPath = controlRoot </> "predicted-actions-plan.json"
+          let parsed =
+                eitherDecode
+                  ( LazyByteString.fromStrict
+                      (TextEncoding.encodeUtf8 (predictedActionsPlanJson args))
+                  )
+          case parsed of
+            Left err ->
+              pure
+                ( textResult toolCall ("invalid predicted actions plan JSON: " <> Text.pack err)
+                , []
+                )
+            Right plan -> do
+              exists <- doesFileExist planPath
+              existing <-
+                if exists
+                  then readPredictedActionsPlanFile planPath
+                  else pure (Right (PredictedActionsPlan Map.empty))
+              case existing of
+                Left err ->
+                  pure
+                    ( textResult
+                        toolCall
+                        ("existing predicted actions plan is invalid: " <> Text.pack err)
+                    , []
+                    )
+                Right oldPlan -> do
+                  createDirectoryIfMissing True controlRoot
+                  LazyByteString.writeFile
+                    planPath
+                    (encode (mergePredictedActionsPlans oldPlan plan))
+                  pure
+                    ( textResult toolCall "predicted actions plan recorded"
+                    ,
+                      [ EffectRecorded
+                          { eventEffect =
+                              EffectRecord
+                                { effectKind = "predicted_actions_plan"
+                                , effectResource = Text.pack planPath
+                                , effectDetail =
+                                    Just
+                                      ( "goals="
+                                          <> Text.intercalate "," (Map.keys (predictedActionsPlanGoals plan))
+                                      )
+                                }
+                          , eventActiveSubgoal = Nothing
+                          }
+                      ]
+                    )
 
 writeFileTool :: ToolSpec
 writeFileTool =
@@ -2540,6 +2830,15 @@ instance FromJSON SetPreloadPlanArgs where
   parseJSON =
     withObject "SetPreloadPlanArgs" $ \value ->
       SetPreloadPlanArgs <$> value .: "plan_json"
+
+newtype SetPredictedActionsPlanArgs = SetPredictedActionsPlanArgs
+  { predictedActionsPlanJson :: Text
+  }
+
+instance FromJSON SetPredictedActionsPlanArgs where
+  parseJSON =
+    withObject "SetPredictedActionsPlanArgs" $ \value ->
+      SetPredictedActionsPlanArgs <$> value .: "plan_json"
 
 data EndGoalArgs = EndGoalArgs
   { endId :: Text

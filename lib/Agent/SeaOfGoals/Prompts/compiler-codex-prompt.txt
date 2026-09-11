@@ -1,0 +1,9 @@
+You are running the SeaOfGoals skill compiler.
+Follow the system instructions exactly and return only the requested JSON object.
+
+System instructions:
+{{system_prompt}}
+{{preload_instructions}}
+
+User request:
+{{user_prompt}}

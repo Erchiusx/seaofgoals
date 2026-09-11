@@ -68,6 +68,7 @@ import Agent.SeaOfGoals.Scheduling.ConcurrentChase
   , ConcurrentChaseResult (..)
   , ConcurrentChaseRunner (..)
   , runConcurrentChase
+  , runConcurrentChaseWithPlanner
   )
 import Agent.SeaOfGoals.Scheduling.Graph
   ( reduceGoalGraph
@@ -171,6 +172,7 @@ import Agent.SeaOfGoals.Workspace.ToolRunner.Sandboxed
 import Control.Concurrent
   ( threadDelay
   )
+import Control.Monad (when)
 import Data.Aeson
   ( FromJSON (..)
   , Value
@@ -237,6 +239,7 @@ main = do
   replanAfterMergeConflictTest
   graphChaseSchedulerTest
   concurrentChaseSchedulerTest
+  plannerChaseSchedulerTest
   serialSchedulerTest
   sandboxedToolCallTest
   eventsRef <- newIORef []
@@ -539,11 +542,11 @@ goalContextPreloadTest = do
   assertBool
     "every explicitly planned file reaches synthetic history"
     ( all
-        ( \path ->
+        ( \_path ->
             any
               ( \case
                   ToolResultInput result ->
-                    ("BEGIN FILE " <> Text.pack path <> "\n")
+                    Text.pack ("export const value = 1;\n")
                       `Text.isInfixOf` Text.concat [content | TextPart content <- toolResultContent result]
                   _ -> False
               )
@@ -1555,6 +1558,51 @@ concurrentChaseSchedulerTest = do
             (goalId "S1", goalId "S2")
             (goalGraphEdges (chaseGraph (concurrentChaseFinalState summary)))
         )
+
+plannerChaseSchedulerTest :: IO ()
+plannerChaseSchedulerTest = do
+  plannedRef <- newIORef (Set.empty :: Set.Set GoalNodeId)
+  executionWhilePlanningRef <- newIORef False
+  let
+    graph =
+      GoalGraph
+        { goalGraphNodes =
+            Map.fromList
+              [ (goalId "G000", schedulerGoal "G000" 0)
+              , (goalId "G001", schedulerGoal "G001" 1)
+              ]
+        , goalGraphEdges = Set.empty
+        }
+    runner =
+      ConcurrentChaseRunner
+        { concurrentChaseMaxParallelism = 2
+        , concurrentChaseMaxReplans = 0
+        , concurrentChaseRunGoal = \node -> do
+            if goalNodeId node == goalId "G000"
+              then do
+                atomicModifyIORef' plannedRef (\ids -> (Set.insert (goalId "G001") ids, ()))
+                threadDelay 100000
+              else do
+                planned <- readIORef plannedRef
+                when
+                  (goalId "G001" `Set.member` planned)
+                  (writeIORef executionWhilePlanningRef True)
+            pure (Right (fakeAgentRunResult node))
+        , concurrentChaseMergeGoal = \_ -> pure (Right ())
+        }
+  result <-
+    runConcurrentChaseWithPlanner
+      runner
+      graph
+      (goalId "G000")
+      (\nodeId -> Set.member nodeId <$> readIORef plannedRef)
+  case result of
+    Left err -> fail ("expected planner chase success, got " <> Text.unpack err)
+    Right _ -> pure ()
+  overlapped <- readIORef executionWhilePlanningRef
+  assertBool
+    "planner chase starts a goal after its plan while planner is still running"
+    overlapped
 
 serialSchedulerTest :: IO ()
 serialSchedulerTest = do

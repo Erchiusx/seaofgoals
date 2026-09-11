@@ -1,32 +1,22 @@
-Compile a raw SKILL.md into a minimal scheduling DAG for an execution agent.
-Do not imitate markdown section boundaries mechanically.
-Infer goals that would be meaningful in a real run of the skill.
-Be faithful to the skill author's explicit workflow, checklist, and recipe steps.
-Do not collapse distinct concrete skill requirements into one broad editing goal when the skill treats them as separate responsibilities.
-If a skill lists several independent fixes or checks, prefer separate goals for them with a shared inspection predecessor and a shared validation successor, but only when their likely file write sets are disjoint.
-Treat parallelism as file-effect parallelism: goals are good parallel candidates when a real run would normally edit different files or different per-item directories, not merely when their abstract reasoning is independent.
-If two responsibilities would likely edit the same source file, registry, root config, lockfile, README table, changelog, generated index, or shared test fixture, either add an ordering edge, split around the shared file, or combine them into one serial goal.
-Use predecessors for direct semantic dependencies and direct file-effect dependencies only.
-If several goals only share an initial inspection/context step, make that step explicit.
-The order of the goals array is the trusted default serial execution order.
-If no parallel execution is attempted, running goals from first to last must be a valid execution plan for the skill.
-Put shared inspection/context-gathering goals before the goals that depend on that context.
-Distinguish designing validation from executing validation. When validation preparation is substantial, consider a separate goal that derives acceptance criteria, selects existing checks, and prepares commands or isolated validation scripts from the task contract, inspected environment, and expected predecessor outputs.
-Such preparation may run alongside implementation after their shared inspection/context dependencies are satisfied. Do not make it depend on completed implementation merely because the skill describes validation near the end.
-Only split preparation when its required information is available early and the split creates meaningful independent work. Keep implementation-specific diagnosis, checks requiring actual new contents, and repairs after the relevant implementation goals. Respect any explicit ordering requirement in the skill.
-Account for preparation's file reads as well as writes: reading a file that concurrent implementation changes can invalidate the plan. Prefer stable contracts and context already obtained by inspection; write any prepared scripts to files not owned by concurrent goals. If this cannot be achieved, retain the necessary dependency.
-Make the preparation output concrete in goal_entering_prompt: a predecessor summary with acceptance criteria and exact commands, or identified validation script paths. Tell the validation executor to reuse that output and adapt it only when actual results or the workspace require changes, rather than redesigning the plan.
-Put validation execution/final-check goals after both the goals producing the artifacts they validate and any validation-preparation goal. Place independent preparation early in the trusted serial array; its position alone does not imply a dependency on implementation.
-Predecessors still represent direct semantic dependencies; do not add predecessor edges merely because one goal appears earlier in the serial order.
-Do not include expected effects, probes, purity, trajectories, or dynamic trace assumptions.
-Descriptions are compiler-generated summaries, not exact source spans.
-goal_entering_prompt is injected when the execution agent enters that goal.
-Return only a JSON object matching this shape:
+Compile the raw SKILL.md into a small DAG of executable goals for a real agent run.
+
+Preserve the skill author's explicit workflow, ordering, branching, and repetition. Do not split mechanically at headings, and do not invent goals merely for compiler or scheduler bookkeeping. Each goal should be a meaningful unit of work that an agent could complete and report.
+
+The runtime can execute ready goals concurrently. This is useful only when the goals have no direct semantic or data dependency and their likely workspace file effects do not conflict. Treat a shared or potentially shared source file, registry, configuration, lockfile, generated index, test fixture, or directory as a dependency or combine the work. Parallel reasoning alone is not sufficient.
+
+Use predecessor edges only for direct semantic, data, control, or file-effect dependencies. Keep the goal list in a valid default serial order. Add exactly one runtime planning goal as the first goal, with id `G000`, unless the skill already contains an explicit equivalent planning step. G000 must inspect `/workspace` read-only, then incrementally publish predictable instructions for later goals in the skill's serial workflow: likely files to read, directory or symbol exploration, commands to run, and relevant workspace-state assumptions. Its `goal_entering_prompt` must require one `set_preload_plan` call for each goal plan, with JSON shaped as `{"goals":{"G001":["relative/path/from/workspace"]}}`; it may publish plans for independent goals as multiple tool calls in one response. Later goals depend on G000 only for the planning information they actually need. Do not add other artificial validation, wiring, or inspection goals unless the skill itself requires that responsibility as a meaningful step. A final validation goal is appropriate only when the skill calls for an integrated check.
+Do not infer a predecessor merely from the skill's section order, a bottom-up implementation convention, or one goal being described before another. For every proposed edge, check whether the current task has an actual dependency between the two goals.
+
+The compiler removes transitively redundant edges after parsing. Still describe the direct dependencies you believe are necessary.
+
+Do not include expected effects, probes, purity labels, trajectories, or dynamic trace assumptions. `goal_entering_prompt` must tell the executor the concrete work and boundary of that goal.
+
+Return only a JSON object matching the schema below:
 {
   "skill": "skill-name",
   "goals": [
     {
-      "id": "G001",
+      "id": "G000",
       "name": "short goal name",
       "description": "what this goal does",
       "predecessors": ["G000"],

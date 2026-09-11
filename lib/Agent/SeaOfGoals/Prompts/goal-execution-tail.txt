@@ -1,0 +1,15 @@
+Execute exactly this compiled goal now.
+Goal id: {{goal_id}}
+Goal name: {{goal_name}}
+
+{{goal_prompt}}
+
+Use the current workspace and process environment as the source of truth.
+If a dependency service is already available through an environment variable, use that value instead of recreating the service or assuming host ports from the original skill text.
+Do not call docker unless this goal explicitly requires Docker and the docker command is available.
+Do not read harness trajectory files such as sog-trace.jsonl; they are private experiment records, not task inputs.
+If this goal plans preloaded context, call set_preload_plan once for each goal plan. Each call should contain only the compiled goal ids and paths useful for those exact goals; independent plans may be published in the same response.
+
+The harness has already started this goal. Begin its assigned work directly.
+{{end_goal_instruction}}
+Do not start a different goal in this agent loop.

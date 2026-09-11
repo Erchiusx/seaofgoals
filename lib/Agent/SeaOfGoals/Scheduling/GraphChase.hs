@@ -5,8 +5,10 @@ module Agent.SeaOfGoals.Scheduling.GraphChase
   , completeGoal
   , initialChaseState
   , nextReadyGoals
+  , nextReadyGoalsWith
   , replanForMergeConflict
   , startReadyGoals
+  , startReadyGoalsWith
   )
 where
 
@@ -65,19 +67,31 @@ initialChaseState graph =
     }
 
 nextReadyGoals :: ChaseState -> [GoalNode]
-nextReadyGoals state =
+nextReadyGoals = nextReadyGoalsWith (const True)
+
+nextReadyGoalsWith :: (GoalNodeId -> Bool) -> ChaseState -> [GoalNode]
+nextReadyGoalsWith planReady state =
   List.filter
-    (\node -> Set.member (goalNodeId node) (chaseQueued state))
+    ( \node ->
+        Set.member (goalNodeId node) (chaseQueued state) && planReady (goalNodeId node)
+    )
     (readyGoalNodes (chaseGraph state) (Map.keysSet (chaseCompleted state)))
 
 startReadyGoals :: Int -> ChaseState -> (ChaseState, [GoalLaunch])
-startReadyGoals maxCount state =
+startReadyGoals = startReadyGoalsWith (const True)
+
+startReadyGoalsWith
+  :: (GoalNodeId -> Bool)
+  -> Int
+  -> ChaseState
+  -> (ChaseState, [GoalLaunch])
+startReadyGoalsWith planReady maxCount state =
   (updatedState, fmap GoalLaunch selected)
  where
   selected =
     if maxCount <= 0
       then []
-      else take maxCount (nextReadyGoals state)
+      else take maxCount (nextReadyGoalsWith planReady state)
   selectedIds = Set.fromList (fmap goalNodeId selected)
   updatedState
     | Set.null selectedIds = state

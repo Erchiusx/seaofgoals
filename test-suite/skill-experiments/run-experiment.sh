@@ -26,8 +26,9 @@ if [ ! -d "$experiment_dir" ]; then
   exit 2
 fi
 
-if [ ! -f "$experiment_dir/sog.json" ]; then
-  echo "missing compiled goal spec: $experiment_dir/sog.json" >&2
+graph_path="${SOG_GRAPH_PATH:-$experiment_dir/sog.json}"
+if [ ! -f "$graph_path" ]; then
+  echo "missing compiled goal spec: $graph_path" >&2
   echo "run 'make build-sog' from the repository root first." >&2
   exit 2
 fi
@@ -46,7 +47,7 @@ if [ "${SOG_DISABLE_WORKFLOW:-}" = "1" ] || [ "${SOG_DISABLE_WORKFLOW:-}" = "tru
   unset SOG_SERIAL_GOALS_TEXT SOG_SERIAL_GOALS
 else
   export SOG_SERIAL_GOALS_TEXT
-  SOG_SERIAL_GOALS_TEXT="$(<"$experiment_dir/sog.json")"
+  SOG_SERIAL_GOALS_TEXT="$(<"$graph_path")"
 fi
 export SOG_SCHEDULER="${SOG_SCHEDULER:-serial}"
 if [ "$SOG_SCHEDULER" = "concurrent" ]; then
@@ -61,6 +62,7 @@ export SOG_CONFIG_FILE="${SOG_CONFIG_FILE:-$repo_root/seaofgoals.config.json}"
 export SOG_AGENT_RUNNER="${SOG_AGENT_RUNNER:-harness}"
 export SOG_EXPERIMENT_DRIVER="${SOG_EXPERIMENT_DRIVER:-docker}"
 export SOG_MODEL="${SOG_MODEL:-gpt-5.5}"
+export SOG_PI_MODEL="${SOG_PI_MODEL:-$SOG_MODEL}"
 export SOG_HARNESS_LIFECYCLE="${SOG_HARNESS_LIFECYCLE:-1}"
 export SOG_PROMPT_CACHE_KEY="${SOG_PROMPT_CACHE_KEY:-sog:$experiment_name:$SOG_MODEL:$SOG_AGENT_RUNNER:$SOG_SCHEDULER:lifecycle-$SOG_HARNESS_LIFECYCLE}"
 export SOG_PROMPT_CACHE_RETENTION="${SOG_PROMPT_CACHE_RETENTION:-24h}"

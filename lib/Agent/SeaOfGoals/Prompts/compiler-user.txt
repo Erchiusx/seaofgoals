@@ -1,9 +1,7 @@
 Skill name: {{skill_name}}
 
-Compile the following raw skill into a scheduling DAG.
-Return only a JSON object matching the schema in the system instructions.
-The execution agent will still receive the full skill text as policy background,
-so goal_entering_prompt should focus on the current goal boundary and task focus.
+Choose a useful goal decomposition for this skill using the compiler instructions. The execution agent will receive the complete raw skill as policy background, so each goal prompt should state only its assigned work and boundary.
+Return only one JSON object matching the schema in the system instructions. Do not include Markdown fences, explanations, or any text outside the JSON object.
 
 Raw SKILL.md:
 ```markdown

@@ -223,6 +223,7 @@ runPiSdkProcess config eventSink goalId workspace controlRoot prompt history = d
       request =
         object
           [ "cwd" .= ("/workspace" :: Text)
+          , "goalId" .= goalId
           , "agentDir" .= ("/pi-agent" :: Text)
           , "prompt" .= prompt
           , "model" .= piProcessModel config
@@ -284,6 +285,7 @@ runPiSdkProcess config eventSink goalId workspace controlRoot prompt history = d
             { BwrapCommand.viewHostRoot = BwrapCommand.ReadOnlyHostRoot
             , BwrapCommand.viewMounts =
                 [ BwrapCommand.Mount workspace "/workspace" BindReadWrite
+                , BwrapCommand.Mount "/tmp" "/tmp" BindReadWrite
                 , BwrapCommand.Mount
                     (controlRoot </> "pi-agent")
                     "/pi-agent"
@@ -406,7 +408,7 @@ piMessage (ToolResultInput result) =
     [ "role" .= ("toolResult" :: Text)
     , "toolCallId" .= toolResultCallId result
     , "toolName" .= fmap piToolName (toolResultName result)
-    , "content" .= fmap contentPartText (toolResultContent result)
+    , "content" .= fmap piContentPart (toolResultContent result)
     , "usage" .= piZeroUsage
     , "isError" .= False
     , "timestamp" .= (0 :: Int)
@@ -449,6 +451,13 @@ messageText = Text.concat . fmap contentPartText . messageContent
 contentPartText :: LLMContentPart -> Text
 contentPartText (TextPart value) = value
 contentPartText _ = "[non-text content omitted]"
+
+piContentPart :: LLMContentPart -> Value
+piContentPart content =
+  object
+    [ "type" .= ("text" :: Text)
+    , "text" .= contentPartText content
+    ]
 
 emitPiEvent
   :: (HarnessEvent -> IO ()) -> Maybe Text -> ByteString.ByteString -> IO ()

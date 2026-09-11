@@ -205,17 +205,12 @@ compilerCodexPrompt skillName skillText =
 
 compilerCodexPromptWithPreloadPlanner :: Bool -> Text -> Text -> Text
 compilerCodexPromptWithPreloadPlanner insertPreloadPlanner skillName skillText =
-  Text.unlines
-    [ "You are running the SeaOfGoals skill compiler."
-    , "Follow the system instructions exactly and return only the requested JSON object."
-    , ""
-    , "System instructions:"
-    , compilerSystemPrompt
-    , compilerPreloadPlannerInstructions insertPreloadPlanner
-    , ""
-    , "User request:"
-    , compilerUserPrompt skillName skillText
-    ]
+  Text.replace "{{user_prompt}}" (compilerUserPrompt skillName skillText)
+    . Text.replace
+      "{{preload_instructions}}"
+      (compilerPreloadPlannerInstructions insertPreloadPlanner)
+    . Text.replace "{{system_prompt}}" compilerSystemPrompt
+    $ $(embedTextFile "lib/Agent/SeaOfGoals/Prompts/compiler-codex-prompt.txt")
 
 compileSkill
   :: LLM.LLM provider
@@ -285,8 +280,42 @@ parseCompiledGoalGraphText rawText = do
           ("model response is not a compiled goal graph JSON object: " <> Text.pack err)
       Right value -> Right value
   case validateCompiledGoalGraph graph of
-    [] -> Right (topologicallySortCompiledGoalGraph graph)
+    [] ->
+      Right
+        (topologicallySortCompiledGoalGraph (transitivelyReduceCompiledGoalGraph graph))
     errors -> Left (Text.intercalate "; " errors)
+
+transitivelyReduceCompiledGoalGraph :: CompiledGoalGraph -> CompiledGoalGraph
+transitivelyReduceCompiledGoalGraph graph =
+  graph
+    { compiledGoals =
+        fmap
+          ( \goal ->
+              goal
+                { compiledGoalPredecessors =
+                    filter
+                      ( \predecessor ->
+                          not
+                            ( any
+                                (\other -> other /= predecessor && reaches predecessor other)
+                                (compiledGoalPredecessors goal)
+                            )
+                      )
+                      (compiledGoalPredecessors goal)
+                }
+          )
+          (compiledGoals graph)
+    }
+ where
+  predecessorMap =
+    Map.fromList
+      [ (compiledGoalId goal, compiledGoalPredecessors goal)
+      | goal <- compiledGoals graph
+      ]
+
+  reaches target current =
+    target `elem` Map.findWithDefault [] current predecessorMap
+      || any (reaches target) (Map.findWithDefault [] current predecessorMap)
 
 topologicallySortCompiledGoalGraph :: CompiledGoalGraph -> CompiledGoalGraph
 topologicallySortCompiledGoalGraph graph =
@@ -458,22 +487,7 @@ compilerPreloadPlannerInstructions :: Bool -> Text
 compilerPreloadPlannerInstructions insertPreloadPlanner
   | not insertPreloadPlanner = ""
   | otherwise =
-      Text.unlines
-        [ ""
-        , "Preload planning mode is enabled."
-        , "Insert a first goal with id G000 and name `Explore workspace and plan goal context`."
-        , "G000 must be read-only with respect to /workspace. It may inspect directories and read files, but must not modify workspace files."
-        , "G000 must call set_preload_plan exactly once with the JSON preload plan before ending the goal."
-        , "The preload plan must have this shape: {\"goals\":{\"G001\":[\"relative/path/from/workspace\"]}}."
-        , "G000 must use the complete goal graph to predict each goal's entry filesystem state after all transitive predecessors' effects have been merged."
-        , "Map each later goal id to useful text file paths in that predicted state, accounting for predecessor creates, edits, moves, and deletions. Paths need not exist during G000; use move destinations and omit paths expected to be deleted."
-        , "The harness reads actual contents from the merged workspace when the target goal starts. Missing predicted paths are reported to that goal for follow-up exploration; do not invent file contents."
-        , "For validation goals, include predecessor-produced implementation and test files, relevant reference files, and validation configuration, not just checker scripts."
-        , "Do not include dependency directories, build outputs, caches, generated bundles, or SeaOfGoals control files."
-        , "Keep the plan concise; prefer files the later goal would otherwise need to read before editing."
-        , "Any goal that would otherwise have no predecessor must list G000 as a predecessor, so no execution goal can start before the preload plan exists."
-        , "G000 is part of the scheduling DAG and should appear first in the goals array."
-        ]
+      $(embedTextFile "lib/Agent/SeaOfGoals/Prompts/compiler-preload-planner.txt")
 
 loadCompilerPreloadPlanner :: IO Bool
 loadCompilerPreloadPlanner = do

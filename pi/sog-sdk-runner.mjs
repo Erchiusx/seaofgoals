@@ -30,6 +30,47 @@ const endGoalTool = {
   },
 };
 
+function planTool(name, description, prefix) {
+  return {
+    name,
+    label: name,
+    description,
+    promptSnippet: description,
+    parameters: {
+      type: "object",
+      properties: { plan_json: { type: "string" } },
+      required: ["plan_json"],
+      additionalProperties: false,
+    },
+    async execute(_toolCallId, params) {
+      let plan;
+      try {
+        plan = JSON.parse(params.plan_json);
+      } catch {
+        return {
+          content: [{ type: "text", text: `${name} rejected invalid JSON.` }],
+          isError: true,
+        };
+      }
+      return {
+        content: [{ type: "text", text: `${prefix}${params.plan_json}` }],
+        details: { plan_json: params.plan_json },
+      };
+    },
+  };
+}
+
+const setPreloadPlanTool = planTool(
+  "set_preload_plan",
+  "Publish the per-goal file preload plan to the SeaOfGoals harness.",
+  "SOG_PRELOAD_PLAN:",
+);
+const setPredictedActionsPlanTool = planTool(
+  "set_predicted_actions_plan",
+  "Publish conservative read-only predicted actions to the SeaOfGoals harness.",
+  "SOG_PREDICTED_ACTIONS_PLAN:",
+);
+
 function makeEntries(cwd, messages = []) {
   const header = {
     type: "session",
@@ -83,14 +124,15 @@ async function run(request) {
   const model = modelRuntime.getModel(provider, modelId);
   if (!model) throw new Error(`Pi model is not available: ${provider}/${modelId}`);
   const sessionManager = SessionManager.inMemory(cwd, undefined, makeEntries(cwd, request.messages));
+  const plannerTools = request.goalId === "G000" ? [setPreloadPlanTool, setPredictedActionsPlanTool] : [];
   const { session } = await createAgentSession({
     cwd,
     agentDir,
     model,
     modelRuntime,
     sessionManager,
-    tools: ["read", "bash", "edit", "write", "end_goal"],
-    customTools: [endGoalTool],
+    tools: ["read", "bash", "edit", "write", "end_goal", "set_preload_plan", "set_predicted_actions_plan"],
+    customTools: [endGoalTool, ...plannerTools],
   });
   const unsubscribe = session.subscribe((event) => {
     process.stdout.write(`${JSON.stringify(event)}\n`);

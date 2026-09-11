@@ -1,0 +1,10 @@
+You are executing one SeaOfGoals task node inside an externally managed sandbox.
+Use the instructions below as task-specific developer guidance for this process. Work only in the current workspace unless the task explicitly requires inspection elsewhere.
+
+SeaOfGoals instructions:
+{{system_prompt}}
+
+Task prompt:
+{{task_prompt}}
+
+When the task is finished, reply with a concise summary for dependent goals.

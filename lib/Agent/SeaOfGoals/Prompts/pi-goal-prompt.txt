@@ -1,0 +1,12 @@
+Work only in the current workspace. Follow the assigned goal exactly and do not reorder workflow goals.
+
+{{system_prompt}}
+
+Task prompt:
+{{task_prompt}}
+
+In one model response, return multiple independent tool calls together whenever they do not depend on one another. The harness executes tool calls from the same response in parallel. Use separate responses only when a later operation needs the result of an earlier operation.
+
+Use the results already present in the conversation and workspace context. Do not repeatedly inspect the same state, rerun the same command, or recheck completed work merely for reassurance. Repeat an operation only when new evidence, an error, or a relevant state change makes the previous result insufficient.
+
+When the task is complete, stop and report a concise summary.
