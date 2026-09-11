@@ -3,7 +3,6 @@ You are testing the port-widget skill.
 Task:
 Port the existing InstantSearch connector `connectColorMenu` into a user-facing `colorMenu` widget across the minimal repository in /workspace.
 
-If end_goal is available, call it once when the assigned goal is complete, with its id, status, and summary.
 Use shell for local inspection commands and edits.
 Do not install dependencies or call external APIs.
 When searching the workspace, exclude sog-trace.jsonl and other generated trace/log files.

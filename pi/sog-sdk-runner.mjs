@@ -131,7 +131,7 @@ async function run(request) {
     model,
     modelRuntime,
     sessionManager,
-    tools: ["read", "bash", "edit", "write", "end_goal", "set_preload_plan", "set_predicted_actions_plan"],
+    tools: ["read", "bash", "edit", "write", "set_preload_plan", "set_predicted_actions_plan"],
     customTools: [endGoalTool, ...plannerTools],
   });
   const unsubscribe = session.subscribe((event) => {

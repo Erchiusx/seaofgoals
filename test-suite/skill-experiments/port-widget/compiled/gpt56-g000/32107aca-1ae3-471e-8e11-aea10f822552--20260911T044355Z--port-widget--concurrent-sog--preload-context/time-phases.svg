@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="432" viewBox="0 0 1100 432">
+<style>text{font:13px sans-serif;fill:#202124}.label{font-weight:600}.grid{stroke:#e5e7eb}</style>
+<text x="120" y="22" class="label">Goal phase coverage</text>
+<text x="1076" y="22" text-anchor="end">wall time: 264.2s</text>
+<text x="108" y="65" text-anchor="end" class="label">G000</text>
+<line x1="120" y1="60" x2="1076" y2="60" class="grid"/>
+<rect x="120.00" y="48" width="37.11" height="24" fill="#4f86c6"/>
+<title>G000 read: 10.3s</title>
+<rect x="157.11" y="48" width="75.94" height="24" fill="#4f86c6"/>
+<text x="195.09" y="65" text-anchor="middle" fill="white">21.0s</text>
+<title>G000 read: 21.0s</title>
+<rect x="233.06" y="48" width="28.77" height="24" fill="#7a5af8"/>
+<title>G000 end_goal: 7.9s</title>
+<text x="108" y="99" text-anchor="end" class="label">G001</text>
+<line x1="120" y1="94" x2="1076" y2="94" class="grid"/>
+<rect x="237.99" y="82" width="17.43" height="24" fill="#4f86c6"/>
+<title>G001 read: 4.8s</title>
+<rect x="255.42" y="82" width="57.52" height="24" fill="#4f86c6"/>
+<title>G001 read: 15.9s</title>
+<rect x="312.95" y="82" width="42.55" height="24" fill="#4f86c6"/>
+<title>G001 read: 11.8s</title>
+<rect x="355.50" y="82" width="73.34" height="24" fill="#7a5af8"/>
+<text x="392.17" y="99" text-anchor="middle" fill="white">20.3s</text>
+<title>G001 end_goal: 20.3s</title>
+<text x="108" y="133" text-anchor="end" class="label">G002</text>
+<line x1="120" y1="128" x2="1076" y2="128" class="grid"/>
+<rect x="433.83" y="116" width="30.69" height="24" fill="#4f86c6"/>
+<title>G002 read: 8.5s</title>
+<rect x="464.52" y="116" width="19.08" height="24" fill="#7a5af8"/>
+<title>G002 end_goal: 5.3s</title>
+<text x="108" y="167" text-anchor="end" class="label">G003</text>
+<line x1="120" y1="162" x2="1076" y2="162" class="grid"/>
+<rect x="489.81" y="150" width="30.51" height="24" fill="#4f86c6"/>
+<title>G003 read: 8.4s</title>
+<rect x="520.32" y="150" width="40.38" height="24" fill="#4f86c6"/>
+<title>G003 read: 11.2s</title>
+<rect x="560.70" y="150" width="53.51" height="24" fill="#d9822b"/>
+<title>G003 write: 14.8s</title>
+<rect x="614.21" y="150" width="13.56" height="24" fill="#d9822b"/>
+<title>G003 write: 3.7s</title>
+<rect x="627.78" y="150" width="14.10" height="24" fill="#d9822b"/>
+<title>G003 write: 3.9s</title>
+<rect x="641.87" y="150" width="26.58" height="24" fill="#7a5af8"/>
+<title>G003 end_goal: 7.3s</title>
+<text x="108" y="201" text-anchor="end" class="label">G004</text>
+<line x1="120" y1="196" x2="1076" y2="196" class="grid"/>
+<rect x="489.88" y="184" width="32.33" height="24" fill="#4f86c6"/>
+<title>G004 read: 8.9s</title>
+<rect x="522.21" y="184" width="14.99" height="24" fill="#4f86c6"/>
+<title>G004 read: 4.1s</title>
+<rect x="537.20" y="184" width="56.19" height="24" fill="#4f86c6"/>
+<title>G004 read: 15.5s</title>
+<rect x="593.38" y="184" width="131.32" height="24" fill="#d9822b"/>
+<text x="659.05" y="201" text-anchor="middle" fill="white">36.3s</text>
+<title>G004 write: 36.3s</title>
+<rect x="724.71" y="184" width="60.21" height="24" fill="#7a5af8"/>
+<title>G004 end_goal: 16.6s</title>
+<text x="108" y="235" text-anchor="end" class="label">G005</text>
+<line x1="120" y1="230" x2="1076" y2="230" class="grid"/>
+<rect x="490.07" y="218" width="38.51" height="24" fill="#4f86c6"/>
+<title>G005 read: 10.6s</title>
+<rect x="528.58" y="218" width="11.67" height="24" fill="#4f86c6"/>
+<title>G005 read: 3.2s</title>
+<rect x="540.26" y="218" width="89.28" height="24" fill="#d9822b"/>
+<text x="584.89" y="235" text-anchor="middle" fill="white">24.7s</text>
+<title>G005 write: 24.7s</title>
+<rect x="629.53" y="218" width="17.11" height="24" fill="#d9822b"/>
+<title>G005 write: 4.7s</title>
+<rect x="646.65" y="218" width="25.34" height="24" fill="#7a5af8"/>
+<title>G005 end_goal: 7.0s</title>
+<text x="108" y="269" text-anchor="end" class="label">G006</text>
+<line x1="120" y1="264" x2="1076" y2="264" class="grid"/>
+<rect x="790.86" y="252" width="34.49" height="24" fill="#4f86c6"/>
+<title>G006 read: 9.5s</title>
+<rect x="825.35" y="252" width="36.12" height="24" fill="#d9822b"/>
+<title>G006 write: 10.0s</title>
+<rect x="861.47" y="252" width="19.60" height="24" fill="#7a5af8"/>
+<title>G006 end_goal: 5.4s</title>
+<text x="108" y="303" text-anchor="end" class="label">G007</text>
+<line x1="120" y1="298" x2="1076" y2="298" class="grid"/>
+<rect x="790.57" y="286" width="29.01" height="24" fill="#4f86c6"/>
+<title>G007 read: 8.0s</title>
+<rect x="819.58" y="286" width="31.47" height="24" fill="#7a5af8"/>
+<title>G007 end_goal: 8.7s</title>
+<text x="108" y="337" text-anchor="end" class="label">G008</text>
+<line x1="120" y1="332" x2="1076" y2="332" class="grid"/>
+<rect x="886.27" y="320" width="37.25" height="24" fill="#4f86c6"/>
+<title>G008 read: 10.3s</title>
+<rect x="923.53" y="320" width="41.81" height="24" fill="#4f86c6"/>
+<title>G008 read: 11.6s</title>
+<rect x="965.33" y="320" width="51.72" height="24" fill="#4f86c6"/>
+<title>G008 read: 14.3s</title>
+<rect x="1017.06" y="320" width="58.94" height="24" fill="#7a5af8"/>
+<title>G008 end_goal: 16.3s</title>
+<line x1="120.00" y1="358" x2="120.00" y2="366" stroke="#9aa0a6"/>
+<text x="120.00" y="382" text-anchor="middle">0.0s</text>
+<line x1="359.00" y1="358" x2="359.00" y2="366" stroke="#9aa0a6"/>
+<text x="359.00" y="382" text-anchor="middle">66.0s</text>
+<line x1="598.00" y1="358" x2="598.00" y2="366" stroke="#9aa0a6"/>
+<text x="598.00" y="382" text-anchor="middle">132.1s</text>
+<line x1="837.00" y1="358" x2="837.00" y2="366" stroke="#9aa0a6"/>
+<text x="837.00" y="382" text-anchor="middle">198.1s</text>
+<line x1="1076.00" y1="358" x2="1076.00" y2="366" stroke="#9aa0a6"/>
+<text x="1076.00" y="382" text-anchor="middle">264.2s</text>
+<rect x="120" y="404" width="12" height="12" fill="#4f86c6"/>
+<text x="138" y="415">read</text>
+<rect x="220" y="404" width="12" height="12" fill="#d9822b"/>
+<text x="238" y="415">write</text>
+<rect x="320" y="404" width="12" height="12" fill="#7a5af8"/>
+<text x="338" y="415">end_goal</text>
+</svg>
