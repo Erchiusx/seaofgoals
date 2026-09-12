@@ -1,0 +1,4 @@
+# Rebuilt from source-revision.txt by prepare-fixture.sh.
+fixture/
+runs/*
+!runs/.gitignore

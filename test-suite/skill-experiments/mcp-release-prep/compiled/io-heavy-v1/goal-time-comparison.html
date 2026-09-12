@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mcp-release-prep goal time comparison</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101316;
+      --panel: #171b20;
+      --line: #313841;
+      --text: #edf1f5;
+      --muted: #a8b0ba;
+      --baseline: #e5aa3e;
+      --concurrent: #63c8ac;
+      --max-seconds: 90;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 system-ui, sans-serif;
+      letter-spacing: 0;
+    }
+    main { width: min(1180px, calc(100% - 32px)); margin: 28px auto 56px; }
+    header { display: flex; justify-content: space-between; gap: 24px; align-items: end; margin-bottom: 20px; }
+    h1 { margin: 0 0 5px; font-size: 22px; }
+    p { margin: 0; color: var(--muted); }
+    .totals { display: flex; gap: 24px; white-space: nowrap; }
+    .total strong { display: block; font-size: 21px; }
+    .total.baseline strong { color: var(--baseline); }
+    .total.concurrent strong { color: var(--concurrent); }
+    .legend { display: flex; gap: 18px; margin: 16px 0 12px; color: var(--muted); }
+    .legend span::before { content: ""; display: inline-block; width: 11px; height: 11px; margin-right: 7px; border-radius: 2px; }
+    .legend .baseline::before { background: var(--baseline); }
+    .legend .concurrent::before { background: var(--concurrent); }
+    .axis { margin-left: 292px; height: 25px; position: relative; border-bottom: 1px solid var(--line); }
+    .axis span { position: absolute; bottom: 4px; transform: translateX(-50%); color: var(--muted); font-size: 12px; }
+    .axis span:first-child { transform: none; }
+    .axis span:last-child { transform: translateX(-100%); }
+    .goal { border-bottom: 1px solid var(--line); padding: 14px 0; }
+    .goal-head { display: grid; grid-template-columns: 72px 200px 1fr; align-items: baseline; margin-bottom: 8px; }
+    .goal-id { font: 600 14px ui-monospace, monospace; }
+    .goal-name { font-weight: 600; }
+    .goal-note { color: var(--muted); font-size: 13px; }
+    .lane { display: grid; grid-template-columns: 92px 200px 1fr; min-height: 30px; align-items: center; }
+    .mode { color: var(--muted); font-size: 12px; text-transform: uppercase; }
+    .detail { color: var(--muted); font-size: 12px; padding-right: 16px; }
+    .track { height: 20px; position: relative; background: repeating-linear-gradient(to right, transparent 0, transparent calc(11.111% - 1px), #252b32 calc(11.111% - 1px), #252b32 11.111%); }
+    .bar { height: 20px; width: calc(var(--seconds) / var(--max-seconds) * 100%); min-width: 2px; position: relative; border-radius: 2px; }
+    .bar.baseline { background: var(--baseline); }
+    .bar.concurrent { background: var(--concurrent); }
+    .bar.shared { background: repeating-linear-gradient(135deg, #e5aa3e 0 8px, #c48a25 8px 16px); }
+    .bar::after { content: attr(data-label); position: absolute; left: 8px; top: 1px; color: #11161a; font-weight: 700; white-space: nowrap; }
+    .bar[data-tooltip]::before {
+      content: attr(data-tooltip);
+      display: none;
+      position: absolute;
+      z-index: 4;
+      left: min(70%, 420px);
+      bottom: calc(100% + 7px);
+      width: max-content;
+      max-width: 440px;
+      padding: 8px 10px;
+      border: 1px solid #48515c;
+      border-radius: 4px;
+      background: #20262d;
+      color: var(--text);
+      font-weight: 400;
+      white-space: normal;
+      box-shadow: 0 8px 24px #0008;
+    }
+    .bar:hover::before { display: block; }
+    .shared-group { border-left: 3px solid #665127; padding-left: 12px; margin-left: -15px; }
+    .shared-explanation { color: #d8b96f; }
+    footer { margin-top: 18px; color: var(--muted); font-size: 12px; }
+    @media (max-width: 760px) {
+      header { display: block; }
+      .totals { margin-top: 14px; }
+      .axis { margin-left: 132px; }
+      .goal-head { grid-template-columns: 58px 1fr; }
+      .goal-note { grid-column: 2; }
+      .lane { grid-template-columns: 72px 60px 1fr; }
+      .detail { font-size: 0; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>mcp-release-prep goal active time</h1>
+      <p>Single Pi baseline versus concurrent SeaOfGoals, gpt-5.6</p>
+    </div>
+    <div class="totals">
+      <div class="total baseline"><span>Baseline wall</span><strong>132.7s</strong></div>
+      <div class="total concurrent"><span>Concurrent wall</span><strong>195.0s</strong></div>
+    </div>
+  </header>
+
+  <div class="legend"><span class="baseline">Single Pi baseline</span><span class="concurrent">Concurrent SOG</span></div>
+  <div class="axis"><span style="left:0">0s</span><span style="left:22.222%">20s</span><span style="left:44.444%">40s</span><span style="left:66.667%">60s</span><span style="left:88.889%">80s</span><span style="left:100%">90s</span></div>
+
+  <section class="goal">
+    <div class="goal-head"><span class="goal-id">G000</span><span class="goal-name">Plan preload context</span><span class="goal-note">SOG-only runtime planner</span></div>
+    <div class="lane"><span class="mode">baseline</span><span class="detail">not present</span><div class="track"></div></div>
+    <div class="lane"><span class="mode">concurrent</span><span class="detail">9 read rounds</span><div class="track"><div class="bar concurrent" style="--seconds:83.6" data-label="83.6s" data-tooltip="G000: workspace inspection and per-goal preload publication; 9 read rounds, 83.6 seconds."></div></div></div>
+  </section>
+
+  <section class="goal">
+    <div class="goal-head"><span class="goal-id">G001</span><span class="goal-name">Inspect release inputs</span><span class="goal-note">metadata, docs, changelog inputs, and command contract</span></div>
+    <div class="lane"><span class="mode">baseline</span><span class="detail">4 read rounds</span><div class="track"><div class="bar baseline" style="--seconds:34.2" data-label="34.2s" data-tooltip="Baseline G001 correspondence: four discovery and inspection rounds, 34.2 seconds."></div></div></div>
+    <div class="lane"><span class="mode">concurrent</span><span class="detail">2 read rounds</span><div class="track"><div class="bar concurrent" style="--seconds:20.1" data-label="20.1s" data-tooltip="Concurrent G001: two read rounds, 20.1 seconds."></div></div></div>
+  </section>
+
+  <section class="goal shared-group">
+    <div class="goal-head"><span class="goal-id">G002-4</span><span class="goal-name">Parallel release edits</span><span class="goal-note shared-explanation">baseline completed all three goals in shared rounds, so its time cannot be split reliably</span></div>
+    <div class="lane"><span class="mode">baseline</span><span class="detail">shared G002-G004</span><div class="track"><div class="bar baseline shared" style="--seconds:45.3" data-label="45.3s shared" data-tooltip="One read/verification round and two write attempts covered G002, G003, and G004 together. The 45.3 seconds must not be charged independently to each goal."></div></div></div>
+    <div class="lane"><span class="mode">G002</span><span class="detail">metadata</span><div class="track"><div class="bar concurrent" style="--seconds:10.9" data-label="10.9s" data-tooltip="Concurrent G002: one write round updating package, manifest, and plugin metadata."></div></div></div>
+    <div class="lane"><span class="mode">G003</span><span class="detail">documentation</span><div class="track"><div class="bar concurrent" style="--seconds:29.2" data-label="29.2s" data-tooltip="Concurrent G003: one read round (14.3s) and one write round (14.9s) across four documentation files."></div></div></div>
+    <div class="lane"><span class="mode">G004</span><span class="detail">changelog</span><div class="track"><div class="bar concurrent" style="--seconds:15.9" data-label="15.9s" data-tooltip="Concurrent G004: one read round (5.5s) and one write round (10.4s)."></div></div></div>
+  </section>
+
+  <section class="goal">
+    <div class="goal-head"><span class="goal-id">G005</span><span class="goal-name">Compile MCP server</span><span class="goal-note">6,001 generated TypeScript sources and build output</span></div>
+    <div class="lane"><span class="mode">baseline</span><span class="detail">1 write round</span><div class="track"><div class="bar baseline" style="--seconds:10.9" data-label="10.9s" data-tooltip="Baseline build round: 10.9 seconds including generation and tool execution."></div></div></div>
+    <div class="lane"><span class="mode">concurrent</span><span class="detail">1 write round</span><div class="track"><div class="bar concurrent" style="--seconds:10.6" data-label="10.6s" data-tooltip="Concurrent G005 build round: 10.6 seconds; overlapped G006."></div></div></div>
+  </section>
+
+  <section class="goal">
+    <div class="goal-head"><span class="goal-id">G006</span><span class="goal-name">Run test compilation</span><span class="goal-note">5,201 generated TypeScript sources and release checks</span></div>
+    <div class="lane"><span class="mode">baseline</span><span class="detail">1 write round</span><div class="track"><div class="bar baseline" style="--seconds:9.5" data-label="9.5s" data-tooltip="Baseline test round: 9.5 seconds, executed after G005."></div></div></div>
+    <div class="lane"><span class="mode">concurrent</span><span class="detail">1 write round</span><div class="track"><div class="bar concurrent" style="--seconds:9.8" data-label="9.8s" data-tooltip="Concurrent G006 test round: 9.8 seconds; overlapped G005."></div></div></div>
+  </section>
+
+  <section class="goal">
+    <div class="goal-head"><span class="goal-id">G007</span><span class="goal-name">Package MCPB</span><span class="goal-note">consume build output and write versioned package</span></div>
+    <div class="lane"><span class="mode">baseline</span><span class="detail">1 write round</span><div class="track"><div class="bar baseline" style="--seconds:6.0" data-label="6.0s" data-tooltip="Baseline package round: 6.0 seconds."></div></div></div>
+    <div class="lane"><span class="mode">concurrent</span><span class="detail">1 write round</span><div class="track"><div class="bar concurrent" style="--seconds:5.3" data-label="5.3s" data-tooltip="Concurrent G007 package round: 5.3 seconds."></div></div></div>
+  </section>
+
+  <section class="goal">
+    <div class="goal-head"><span class="goal-id">G008</span><span class="goal-name">Verify release</span><span class="goal-note">integrated checker and artifact inspection</span></div>
+    <div class="lane"><span class="mode">baseline</span><span class="detail">2 read rounds</span><div class="track"><div class="bar baseline" style="--seconds:17.7" data-label="17.7s" data-tooltip="Baseline final checker and artifact inspection: two read rounds, 17.7 seconds."></div></div></div>
+    <div class="lane"><span class="mode">concurrent</span><span class="detail">1 read round</span><div class="track"><div class="bar concurrent" style="--seconds:4.3" data-label="4.3s" data-tooltip="Concurrent G008 final checker: one read round, 4.3 seconds."></div></div></div>
+  </section>
+
+  <footer>Bar widths use one shared 0-90 second scale. Active time includes model waiting/generation and tool execution, but does not distinguish reasoning from ordinary generation. Wall time also includes scheduling, workspace merge, and lifecycle gaps.</footer>
+</main>
+</body>
+</html>

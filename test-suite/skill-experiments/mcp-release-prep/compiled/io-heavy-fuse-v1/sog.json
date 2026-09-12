@@ -1,0 +1,68 @@
+{
+  "skill": "mcp-release-prep",
+  "goals": [
+    {
+      "id": "G000",
+      "name": "Explore workspace and plan goal context",
+      "description": "Inspect the release fixture read-only and incrementally publish preload plans for every later goal.",
+      "predecessors": [],
+      "goal_entering_prompt": "Inspect /workspace read-only. Locate the MCP skill root, release metadata, documentation, changelog inputs, package scripts, TypeScript sources, tests, build outputs, and packaging checks. Using the complete goal graph and each goal's predicted entry state, publish exactly one set_preload_plan call per later goal as soon as its plan is ready. Every call must use the scheduler-readable JSON shape {\"goals\":{\"G001\":[\"relative/path/from/workspace\"]}}, replacing G001 with that call's goal id and listing only relative file paths. Plans may be published as parallel tool calls. Account for predecessor edits when predicting later goal state. Do not modify workspace files or execute build, test, or package commands."
+    },
+    {
+      "id": "G001",
+      "name": "Inspect release inputs",
+      "description": "Read the current release versions, documentation locations, changelog input, scripts, and validation contract.",
+      "predecessors": [],
+      "goal_entering_prompt": "Inspect the local MCP package under .claude/skills without modifying files. Determine the current MCP version, minimum qsv version, every required hardcoded documentation location, relevant `(mcp)` entries in release-commits.txt, and the exact build, test, package, and final-check commands. Report the concrete release-update plan for version 16.2.0."
+    },
+    {
+      "id": "G002",
+      "name": "Update core release metadata",
+      "description": "Update the MCP server version in package, manifest, and plugin metadata without changing binary compatibility.",
+      "predecessors": ["G001"],
+      "goal_entering_prompt": "Update only the core MCP release metadata under .claude/skills for version 16.2.0: package.json, manifest.json, and .claude-plugin/plugin.json. Keep minimum_qsv_version unchanged and do not edit src/version.ts or qsv/*.json. Preserve all unrelated fields."
+    },
+    {
+      "id": "G003",
+      "name": "Update release documentation",
+      "description": "Update all hardcoded MCP server versions and desktop extension history entries in documentation.",
+      "predecessors": ["G001"],
+      "goal_entering_prompt": "Update only the release documentation required by the skill for MCP server version 16.2.0: README-MCP.md, docs/guides/MACOS-QUICK_START.md, docs/desktop/README-MCPB.md, and the version history in docs/guides/DESKTOP_EXTENSION.md. Replace every relevant hardcoded 16.1.0 occurrence while preserving surrounding instructions. Do not edit release metadata or changelog files."
+    },
+    {
+      "id": "G004",
+      "name": "Write release changelog",
+      "description": "Create the dated MCP release entry from the provided relevant commit history.",
+      "predecessors": ["G001"],
+      "goal_entering_prompt": "Update only .claude/skills/CHANGELOG.md. Use release-commits.txt as the local result of the skill's git query. Include a changelog bullet for every line marked `(mcp)`, preserve the substance of each relevant commit title, exclude every unmarked line, and add the 16.2.0 section dated with the current date at the top. Preserve the existing 16.1.0 history below it."
+    },
+    {
+      "id": "G005",
+      "name": "Compile the MCP server",
+      "description": "Run the real TypeScript build workload and retain its isolated build outputs.",
+      "predecessors": ["G002", "G003", "G004"],
+      "goal_entering_prompt": "Run `cd .claude/skills && /usr/bin/node scripts/heavy-compile.mjs build` exactly once. This is the underlying command of the skill-prescribed `npm run build`; call it directly because npm is not mounted in the isolated node workspace. This is an intentionally substantial TypeScript compilation and may take time. Do not run tests, packaging, or extra validation in this goal. If the build fails, report the concrete compiler error instead of changing unrelated files."
+    },
+    {
+      "id": "G006",
+      "name": "Run the MCP test suite",
+      "description": "Run the independent TypeScript test compilation and release consistency checks.",
+      "predecessors": ["G002", "G003", "G004"],
+      "goal_entering_prompt": "Run `cd .claude/skills && /usr/bin/node scripts/heavy-compile.mjs test && /usr/bin/node scripts/check-release.mjs` exactly once as one shell command. These are the underlying commands of the skill-prescribed `npm test`; call them directly because npm is not mounted in the isolated node workspace. The test performs an independent TypeScript compilation and release consistency checks in a separate output tree. Do not run the build or package command and do not repeat successful checks."
+    },
+    {
+      "id": "G007",
+      "name": "Package the MCP release",
+      "description": "Package the compiled distribution into the requested versioned MCPB artifact.",
+      "predecessors": ["G005"],
+      "goal_entering_prompt": "Run `cd .claude/skills && /usr/bin/node scripts/package.mjs` exactly once. This is the underlying command of the skill-prescribed `npm run mcpb:package`; call it directly because npm is not mounted in the isolated node workspace. Confirm that it consumes the completed build output and creates release/qsv-mcp-server-16.2.0.mcpb. Do not rerun build or tests."
+    },
+    {
+      "id": "G008",
+      "name": "Verify the completed release",
+      "description": "Run the integrated final checker after both compilation branches and packaging finish.",
+      "predecessors": ["G006", "G007"],
+      "goal_entering_prompt": "Run `cd .claude/skills && /usr/bin/node scripts/check-release.mjs --require-artifact` exactly once. Do not repeat build, test, or package commands. Report whether metadata, documentation, changelog, build manifest, test report, and the versioned MCPB artifact are all complete."
+    }
+  ]
+}

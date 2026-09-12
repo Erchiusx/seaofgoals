@@ -1,0 +1,68 @@
+{
+  "skill": "mcp-release-prep-qsv-real",
+  "goals": [
+    {
+      "id": "G000",
+      "name": "Explore workspace and plan goal context",
+      "description": "Inspect the real qsv MCP package read-only and incrementally publish preload plans for every later goal.",
+      "predecessors": [],
+      "goal_entering_prompt": "Inspect /workspace read-only. Locate the qsv MCP skill root, release metadata, documentation, changelog inputs, package scripts, TypeScript sources, tests, build outputs, and packaging inputs. Using the complete goal graph and each goal's predicted entry state, publish exactly one set_preload_plan call per later goal as soon as its plan is ready. Every call must use the scheduler-readable JSON shape {\"goals\":{\"G001\":[\"relative/path/from/workspace\"]}}, replacing G001 with that call's goal id. Plans may be published as parallel tool calls. Account for predecessor edits when predicting later goal state. Do not modify workspace files or execute build, test, or package commands."
+    },
+    {
+      "id": "G001",
+      "name": "Inspect release inputs",
+      "description": "Inspect the real qsv release metadata, documentation, changelog input, scripts, and verification contract.",
+      "predecessors": [],
+      "goal_entering_prompt": "Inspect the qsv MCP package under .claude/skills without modifying files. Determine the current MCP version, minimum qsv version, required hardcoded documentation locations, relevant `(mcp)` entries in release-commits.txt, and the exact build, test, package, and final-check commands for release 17.0.1."
+    },
+    {
+      "id": "G002",
+      "name": "Update core release metadata",
+      "description": "Update package, manifest, and plugin metadata without changing binary compatibility.",
+      "predecessors": ["G001"],
+      "goal_entering_prompt": "Update only the core MCP release metadata under .claude/skills for version 17.0.1: package.json, manifest.json, and .claude-plugin/plugin.json. Keep minimum_qsv_version unchanged and do not edit src/version.ts or qsv/*.json. Preserve all unrelated fields."
+    },
+    {
+      "id": "G003",
+      "name": "Update release documentation",
+      "description": "Update the hardcoded MCP server versions and desktop extension history required by the skill.",
+      "predecessors": ["G001"],
+      "goal_entering_prompt": "Update only the release documentation required by the skill for MCP server version 17.0.1: README-MCP.md, docs/guides/MACOS-QUICK_START.md, docs/desktop/README-MCPB.md, and the version history in docs/guides/DESKTOP_EXTENSION.md. Distinguish MCP server versions from Node.js and minimum qsv versions. Preserve surrounding instructions and do not edit release metadata or CHANGELOG.md."
+    },
+    {
+      "id": "G004",
+      "name": "Write release changelog",
+      "description": "Create the dated MCP release entry from the real relevant qsv commit list.",
+      "predecessors": ["G001"],
+      "goal_entering_prompt": "Update only .claude/skills/CHANGELOG.md. Use release-commits.txt as the exact local result of the skill's git query. Summarize the relevant `(mcp)` changes into Added, Changed, and Fixed entries for version 17.0.1 dated with the current date. Preserve existing release history below the new section."
+    },
+    {
+      "id": "G005",
+      "name": "Compile the MCP server",
+      "description": "Run the qsv package's real TypeScript build.",
+      "predecessors": ["G002", "G003", "G004"],
+      "goal_entering_prompt": "Run `cd .claude/skills && npm run build` exactly once. Do not run tests, packaging, or additional validation in this goal. If compilation fails, report the concrete compiler error instead of changing unrelated files."
+    },
+    {
+      "id": "G006",
+      "name": "Run the MCP test suite",
+      "description": "Run the qsv package's real test compilation and Node test suite.",
+      "predecessors": ["G002", "G003", "G004"],
+      "goal_entering_prompt": "Run `cd .claude/skills && npm test` exactly once. Do not separately run build or packaging and do not repeat successful tests. Report concrete failures without changing unrelated files."
+    },
+    {
+      "id": "G007",
+      "name": "Package the MCP release",
+      "description": "Run the real qsv MCPB packaging script after compilation and tests.",
+      "predecessors": ["G005", "G006"],
+      "goal_entering_prompt": "Run `cd .claude/skills && npm run mcpb:package` exactly once. Confirm that it creates qsv-mcp-server-17.0.1.mcpb. Do not rerun tests or perform unrelated validation."
+    },
+    {
+      "id": "G008",
+      "name": "Verify the completed release",
+      "description": "Check the requested versions and package artifact without rerunning build, test, or package commands.",
+      "predecessors": ["G007"],
+      "goal_entering_prompt": "Verify that package.json, manifest.json, .claude-plugin/plugin.json, the skill-required documentation, and the top CHANGELOG.md entry consistently reflect MCP server version 17.0.1, while minimum_qsv_version remains unchanged. Confirm that qsv-mcp-server-17.0.1.mcpb exists and is nonempty. Do not rerun build, tests, or packaging."
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "title": "mcp-release-prep goal timeline comparison",
+  "goal_details": {
+    "G000": "runtime planning",
+    "G001": "release inspection",
+    "G002": "metadata edits",
+    "G003": "documentation edits",
+    "G004": "changelog edit",
+    "G005": "build compilation",
+    "G006": "test compilation",
+    "G007": "package",
+    "G008": "final verification"
+  },
+  "groups": [
+    {
+      "id": "G000",
+      "name": "Plan preload context",
+      "note": "SOG-only runtime planner",
+      "baseline_turns": [],
+      "concurrent_goals": ["G000"]
+    },
+    {
+      "id": "G001",
+      "name": "Inspect release inputs",
+      "baseline_detail": "turns 1-4",
+      "baseline_turns": [1, 2, 3, 4],
+      "concurrent_goals": ["G001"]
+    },
+    {
+      "id": "G002-G004",
+      "name": "Parallel release edits",
+      "note": "baseline turns 5-7 jointly cover all three goals",
+      "baseline_detail": "shared turns 5-7",
+      "baseline_turns": [5, 6, 7],
+      "shared_baseline": true,
+      "concurrent_goals": ["G002", "G003", "G004"]
+    },
+    {
+      "id": "G005",
+      "name": "Compile MCP server",
+      "baseline_detail": "turn 8",
+      "baseline_turns": [8],
+      "concurrent_goals": ["G005"]
+    },
+    {
+      "id": "G006",
+      "name": "Run test compilation",
+      "baseline_detail": "turn 9",
+      "baseline_turns": [9],
+      "concurrent_goals": ["G006"]
+    },
+    {
+      "id": "G007",
+      "name": "Package MCPB",
+      "baseline_detail": "turn 10",
+      "baseline_turns": [10],
+      "concurrent_goals": ["G007"]
+    },
+    {
+      "id": "G008",
+      "name": "Verify release",
+      "baseline_detail": "turns 11-13",
+      "baseline_turns": [11, 12, 13],
+      "concurrent_goals": ["G008"]
+    }
+  ]
+}

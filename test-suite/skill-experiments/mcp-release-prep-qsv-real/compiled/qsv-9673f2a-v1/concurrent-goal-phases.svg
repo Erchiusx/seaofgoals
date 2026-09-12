@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="468" viewBox="0 0 1800 468">
+<style>text{font:13px sans-serif;fill:#202124}.label{font-weight:600}.grid{stroke:#e5e7eb}</style>
+<text x="150" y="22" class="label">Goal phase coverage</text>
+<text x="1776" y="22" text-anchor="end">wall time: 287.2s</text>
+<text x="138" y="65" text-anchor="end" class="label">G000</text>
+<line x1="150" y1="60" x2="1776" y2="60" class="grid"/>
+<rect x="150.00" y="48" width="98.63" height="24" fill="#94a3b8"><title>G000 model_wait: 17.4s (0.0s - 17.4s)</title></rect>
+<text x="199.32" y="65" text-anchor="middle" fill="white">17.4s</text>
+<rect x="248.63" y="48" width="2.00" height="24" fill="#8b5cf6"><title>G000 reasoning: 0.0s (17.4s - 17.4s)</title></rect>
+<rect x="248.70" y="48" width="762.59" height="24" fill="#0f766e"><title>G000 generation: 134.7s (17.4s - 152.1s)</title></rect>
+<text x="629.99" y="65" text-anchor="middle" fill="white">134.7s</text>
+<rect x="1011.29" y="48" width="2.00" height="24" fill="#4f86c6"><title>G000 read: 0.1s (152.1s - 152.2s)</title></rect>
+<text x="138" y="103" text-anchor="end" class="label">G001</text>
+<line x1="150" y1="98" x2="1776" y2="98" class="grid"/>
+<rect x="226.69" y="86" width="347.29" height="24" fill="#94a3b8"><title>G001 model_wait: 61.3s (13.5s - 74.9s)</title></rect>
+<text x="400.33" y="103" text-anchor="middle" fill="white">61.3s</text>
+<rect x="573.98" y="86" width="2.00" height="24" fill="#8b5cf6"><title>G001 reasoning: 0.1s (74.9s - 75.0s)</title></rect>
+<rect x="574.76" y="86" width="127.30" height="24" fill="#0f766e"><title>G001 generation: 22.5s (75.0s - 97.5s)</title></rect>
+<text x="638.41" y="103" text-anchor="middle" fill="white">22.5s</text>
+<rect x="702.06" y="86" width="2.00" height="24" fill="#4f86c6"><title>G001 read: 0.1s (97.5s - 97.6s)</title></rect>
+<text x="138" y="141" text-anchor="end" class="label">G002</text>
+<line x1="150" y1="136" x2="1776" y2="136" class="grid"/>
+<rect x="712.88" y="124" width="43.09" height="24" fill="#94a3b8"><title>G002 model_wait: 7.6s (99.4s - 107.0s)</title></rect>
+<rect x="755.97" y="124" width="2.00" height="24" fill="#8b5cf6"><title>G002 reasoning: 0.0s (107.0s - 107.0s)</title></rect>
+<rect x="755.98" y="124" width="34.04" height="24" fill="#0f766e"><title>G002 generation: 6.0s (107.0s - 113.0s)</title></rect>
+<rect x="790.01" y="124" width="2.00" height="24" fill="#d9822b"><title>G002 write: 0.0s (113.0s - 113.0s)</title></rect>
+<text x="138" y="179" text-anchor="end" class="label">G003</text>
+<line x1="150" y1="174" x2="1776" y2="174" class="grid"/>
+<rect x="712.66" y="162" width="104.06" height="24" fill="#94a3b8"><title>G003 model_wait: 18.4s (99.4s - 117.8s)</title></rect>
+<text x="764.69" y="179" text-anchor="middle" fill="white">18.4s</text>
+<rect x="816.72" y="162" width="2.00" height="24" fill="#8b5cf6"><title>G003 reasoning: 0.2s (117.8s - 117.9s)</title></rect>
+<rect x="817.65" y="162" width="193.11" height="24" fill="#0f766e"><title>G003 generation: 34.1s (117.9s - 152.0s)</title></rect>
+<text x="914.21" y="179" text-anchor="middle" fill="white">34.1s</text>
+<rect x="1010.76" y="162" width="2.00" height="24" fill="#4f86c6"><title>G003 read: 0.0s (152.0s - 152.1s)</title></rect>
+<rect x="1010.93" y="162" width="2.00" height="24" fill="#d9822b"><title>G003 write: 0.0s (152.1s - 152.1s)</title></rect>
+<text x="138" y="217" text-anchor="end" class="label">G004</text>
+<line x1="150" y1="212" x2="1776" y2="212" class="grid"/>
+<rect x="713.15" y="200" width="99.80" height="24" fill="#94a3b8"><title>G004 model_wait: 17.6s (99.5s - 117.1s)</title></rect>
+<text x="763.05" y="217" text-anchor="middle" fill="white">17.6s</text>
+<rect x="812.95" y="200" width="2.00" height="24" fill="#8b5cf6"><title>G004 reasoning: 0.0s (117.1s - 117.1s)</title></rect>
+<rect x="813.11" y="200" width="85.81" height="24" fill="#0f766e"><title>G004 generation: 15.2s (117.1s - 132.3s)</title></rect>
+<text x="856.01" y="217" text-anchor="middle" fill="white">15.2s</text>
+<rect x="898.92" y="200" width="2.00" height="24" fill="#4f86c6"><title>G004 read: 0.0s (132.3s - 132.3s)</title></rect>
+<rect x="898.99" y="200" width="2.00" height="24" fill="#d9822b"><title>G004 write: 0.0s (132.3s - 132.3s)</title></rect>
+<text x="138" y="255" text-anchor="end" class="label">G005</text>
+<line x1="150" y1="250" x2="1776" y2="250" class="grid"/>
+<rect x="1019.89" y="238" width="25.58" height="24" fill="#94a3b8"><title>G005 model_wait: 4.5s (153.6s - 158.2s)</title></rect>
+<rect x="1045.47" y="238" width="2.00" height="24" fill="#8b5cf6"><title>G005 reasoning: 0.0s (158.2s - 158.2s)</title></rect>
+<rect x="1045.48" y="238" width="30.12" height="24" fill="#0f766e"><title>G005 generation: 5.3s (158.2s - 163.5s)</title></rect>
+<rect x="1075.60" y="238" width="14.81" height="24" fill="#d9822b"><title>G005 write: 2.6s (163.5s - 166.1s)</title></rect>
+<text x="138" y="293" text-anchor="end" class="label">G006</text>
+<line x1="150" y1="288" x2="1776" y2="288" class="grid"/>
+<rect x="1019.99" y="276" width="55.50" height="24" fill="#94a3b8"><title>G006 model_wait: 9.8s (153.7s - 163.5s)</title></rect>
+<rect x="1075.49" y="276" width="2.00" height="24" fill="#8b5cf6"><title>G006 reasoning: 0.0s (163.5s - 163.5s)</title></rect>
+<rect x="1075.50" y="276" width="58.97" height="24" fill="#0f766e"><title>G006 generation: 10.4s (163.5s - 173.9s)</title></rect>
+<rect x="1134.47" y="276" width="53.63" height="24" fill="#d9822b"><title>G006 write: 9.5s (173.9s - 183.3s)</title></rect>
+<text x="138" y="331" text-anchor="end" class="label">G007</text>
+<line x1="150" y1="326" x2="1776" y2="326" class="grid"/>
+<rect x="1205.30" y="314" width="33.79" height="24" fill="#94a3b8"><title>G007 model_wait: 6.0s (186.4s - 192.4s)</title></rect>
+<rect x="1239.09" y="314" width="2.00" height="24" fill="#8b5cf6"><title>G007 reasoning: 0.0s (192.4s - 192.4s)</title></rect>
+<rect x="1239.21" y="314" width="35.58" height="24" fill="#0f766e"><title>G007 generation: 6.3s (192.4s - 198.7s)</title></rect>
+<rect x="1274.79" y="314" width="162.76" height="24" fill="#d9822b"><title>G007 write: 28.7s (198.7s - 227.4s)</title></rect>
+<text x="1356.17" y="331" text-anchor="middle" fill="white">28.7s</text>
+<text x="138" y="369" text-anchor="end" class="label">G008</text>
+<line x1="150" y1="364" x2="1776" y2="364" class="grid"/>
+<rect x="1447.05" y="352" width="200.91" height="24" fill="#94a3b8"><title>G008 model_wait: 35.5s (229.1s - 264.6s)</title></rect>
+<text x="1547.50" y="369" text-anchor="middle" fill="white">35.5s</text>
+<rect x="1647.96" y="352" width="2.00" height="24" fill="#8b5cf6"><title>G008 reasoning: 0.0s (264.6s - 264.6s)</title></rect>
+<rect x="1647.97" y="352" width="127.79" height="24" fill="#0f766e"><title>G008 generation: 22.6s (264.6s - 287.1s)</title></rect>
+<text x="1711.87" y="369" text-anchor="middle" fill="white">22.6s</text>
+<rect x="1775.76" y="352" width="2.00" height="24" fill="#4f86c6"><title>G008 read: 0.0s (287.1s - 287.2s)</title></rect>
+<line x1="150.00" y1="394" x2="150.00" y2="402" stroke="#9aa0a6"/>
+<text x="150.00" y="418" text-anchor="middle">0.0s</text>
+<line x1="556.50" y1="394" x2="556.50" y2="402" stroke="#9aa0a6"/>
+<text x="556.50" y="418" text-anchor="middle">71.8s</text>
+<line x1="963.00" y1="394" x2="963.00" y2="402" stroke="#9aa0a6"/>
+<text x="963.00" y="418" text-anchor="middle">143.6s</text>
+<line x1="1369.50" y1="394" x2="1369.50" y2="402" stroke="#9aa0a6"/>
+<text x="1369.50" y="418" text-anchor="middle">215.4s</text>
+<line x1="1776.00" y1="394" x2="1776.00" y2="402" stroke="#9aa0a6"/>
+<text x="1776.00" y="418" text-anchor="middle">287.2s</text>
+<rect x="150" y="440" width="12" height="12" fill="#94a3b8"/>
+<text x="168" y="451">model_wait</text>
+<rect x="285" y="440" width="12" height="12" fill="#8b5cf6"/>
+<text x="303" y="451">reasoning</text>
+<rect x="420" y="440" width="12" height="12" fill="#0f766e"/>
+<text x="438" y="451">generation</text>
+<rect x="555" y="440" width="12" height="12" fill="#4f86c6"/>
+<text x="573" y="451">read</text>
+<rect x="690" y="440" width="12" height="12" fill="#d9822b"/>
+<text x="708" y="451">write</text>
+<rect x="825" y="440" width="12" height="12" fill="#7a5af8"/>
+<text x="843" y="451">end_goal</text>
+</svg>

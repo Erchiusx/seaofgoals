@@ -1,0 +1,25 @@
+{
+  "skill": "mcp-release-prep",
+  "goals": [
+    {
+      "id": "G000",
+      "name": "Explore workspace and plan goal context",
+      "description": "Inspect the repository read-only and incrementally publish preload plans for the release update and verification goals.",
+      "predecessors": [],
+      "goal_entering_prompt": "Inspect /workspace without modifying any workspace files. Locate the MCP skill root, release metadata, documentation, changelog, package scripts, tests, and relevant repository configuration. Using the complete goal graph and each goal's predicted entry state, publish each later goal's concise file plan in serial workflow order as soon as it is ready."
+    },
+    {
+      "id": "G001",
+      "name": "Prepare MCP release files and changelog",
+      "description": "Apply the requested MCP server version across required metadata and documentation, conditionally update binary compatibility, and create the release changelog entry from relevant commits.",
+      "predecessors": []
+    },
+    {
+      "id": "G002",
+      "name": "Build, test, and package the release",
+      "description": "Run the prescribed integrated checks and confirm that the versioned MCPB release artifact is generated.",
+      "predecessors": ["G001"]
+    }
+  ]
+}
+

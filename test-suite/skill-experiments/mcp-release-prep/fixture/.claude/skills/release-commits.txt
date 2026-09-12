@@ -1,0 +1,5 @@
+9c123aa (mcp) stream model phase timing into experiment traces
+8b456bb docs refresh for qsv command examples
+7a789cc (mcp) publish preload plans incrementally as tool calls complete
+6d012ee fix csv parser edge case
+

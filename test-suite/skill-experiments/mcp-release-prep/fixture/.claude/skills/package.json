@@ -1,0 +1,12 @@
+{
+  "name": "qsv-mcp-server",
+  "version": "16.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/heavy-compile.mjs build",
+    "test": "node scripts/heavy-compile.mjs test && node scripts/check-release.mjs",
+    "mcpb:package": "node scripts/package.mjs"
+  }
+}
+
