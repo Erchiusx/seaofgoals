@@ -22,7 +22,8 @@ def command_writes(tool_name, arguments):
     return bool(
         re.search(
             r"\b(apply_patch|sed\s+-i|perl\s+-i|tee|mv|cp|rm|mkdir|touch|"
-            r"heavy-compile\.mjs\s+(build|test)|package\.mjs|npm\s+(run|test|install)|"
+            r"heavy-compile\.mjs\s+(build|test)|package\.mjs|"
+            r"npm(?:\s+--[A-Za-z0-9_-]+(?:[= ][^\s;&|]+)?)*\s+(run|test|install)|"
             r"git\s+(apply|checkout|reset))\b",
             command,
         )
