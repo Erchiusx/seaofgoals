@@ -54,6 +54,9 @@ if [ "$SOG_SCHEDULER" = "concurrent" ]; then
   export SOG_SANDBOX="${SOG_SANDBOX:-bwrap}"
 fi
 workflow_suffix="--$SOG_SCHEDULER-sog"
+if [ "${SOG_CONCURRENT_WORKSPACE:-}" = "fuse" ]; then
+  workflow_suffix="$workflow_suffix--fuse"
+fi
 if [ "${SOG_PRELOAD_GOAL_CONTEXT:-}" = "1" ] || [ "${SOG_PRELOAD_GOAL_CONTEXT:-}" = "true" ]; then
   workflow_suffix="$workflow_suffix--preload-context"
 fi
@@ -64,7 +67,7 @@ export SOG_EXPERIMENT_DRIVER="${SOG_EXPERIMENT_DRIVER:-docker}"
 export SOG_MODEL="${SOG_MODEL:-gpt-5.5}"
 export SOG_PI_MODEL="${SOG_PI_MODEL:-$SOG_MODEL}"
 export SOG_HARNESS_LIFECYCLE="${SOG_HARNESS_LIFECYCLE:-1}"
-export SOG_PROMPT_CACHE_KEY="${SOG_PROMPT_CACHE_KEY:-sog:$experiment_name:$SOG_MODEL:$SOG_AGENT_RUNNER:$SOG_SCHEDULER:lifecycle-$SOG_HARNESS_LIFECYCLE}"
+export SOG_PROMPT_CACHE_KEY="${SOG_PROMPT_CACHE_KEY:-sog:$experiment_name:$SOG_MODEL:$SOG_AGENT_RUNNER:$SOG_SCHEDULER:${SOG_CONCURRENT_WORKSPACE:-none}:lifecycle-$SOG_HARNESS_LIFECYCLE}"
 export SOG_PROMPT_CACHE_RETENTION="${SOG_PROMPT_CACHE_RETENTION:-24h}"
 export SOG_CODEX_HOME_HOST="${SOG_CODEX_HOME_HOST:-${CODEX_HOME:-$HOME/.codex}}"
 export SOG_CODEX_HOME="${SOG_CODEX_HOME:-/codex-home}"

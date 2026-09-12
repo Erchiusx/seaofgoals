@@ -13,6 +13,7 @@ import Data.ByteString qualified as ByteString
 import Foreign.C.Error (eOK)
 import System.Directory
   ( createDirectoryIfMissing
+  , createFileLink
   , doesFileExist
   , getTemporaryDirectory
   , removePathForcibly
@@ -37,6 +38,16 @@ main = do
   ByteString.writeFile (base </> "src" </> "Main.hs") "main = putStrLn \"old\"\n"
   ByteString.writeFile (base </> "src" </> "Obsolete.hs") "obsolete\n"
   ByteString.writeFile (base </> "src" </> "Untouched.hs") "untouched\n"
+  createDirectoryIfMissing True (base </> "node_modules" </> ".bin")
+  createDirectoryIfMissing
+    True
+    (base </> "node_modules" </> "typescript" </> "bin")
+  ByteString.writeFile
+    (base </> "node_modules" </> "typescript" </> "bin" </> "tsc")
+    "typescript compiler\n"
+  createFileLink
+    (".." </> "typescript" </> "bin" </> "tsc")
+    (base </> "node_modules" </> ".bin" </> "tsc")
 
   handle <-
     prepareWorkspace
@@ -54,6 +65,8 @@ main = do
     operations
     (base </> "src" </> "Untouched.hs")
     "/src/Untouched.hs"
+  readlinkFromFuse operations "/node_modules/.bin/tsc"
+    `assertIOEqual` (".." </> "typescript" </> "bin" </> "tsc")
 
   writeThroughFuse operations "/README.md" "hello\n"
   writeThroughFuse operations "/src/Main.hs" "main = putStrLn \"new\"\n"
@@ -97,6 +110,15 @@ readFromFuse operations path =
     Just callback -> do
       result <- callback path path 4096 0
       either (const (fail ("FUSE read failed: " <> path))) pure result
+
+readlinkFromFuse
+  :: FuseOperations FilePath () -> FilePath -> IO FilePath
+readlinkFromFuse operations path =
+  case fuseReadlink operations of
+    Nothing -> fail "fuseReadlink callback is not installed"
+    Just callback -> do
+      result <- callback path
+      either (const (fail ("FUSE readlink failed: " <> path))) pure result
 
 writeThroughFuse
   :: FuseOperations FilePath () -> FilePath -> ByteString.ByteString -> IO ()

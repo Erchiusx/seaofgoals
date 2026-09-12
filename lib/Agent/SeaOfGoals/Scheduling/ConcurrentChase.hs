@@ -213,7 +213,7 @@ runConcurrentChaseWithPlanner runner graph plannerId planReady =
               Nothing -> do
                 threadDelay 10000
                 loop started runOrder mergeOrder replanCount newRunning
-              Just (node, task, outcome) ->
+              Just (node, _task, outcome) ->
                 let remaining = Map.delete (goalNodeId node) newRunning
                  in processCompleted started runOrder mergeOrder replanCount remaining node outcome
    where
@@ -221,19 +221,29 @@ runConcurrentChaseWithPlanner runner graph plannerId planReady =
       | goalId == plannerId = pure (goalId, True)
       | otherwise = (goalId,) <$> planReady goalId
 
-    firstFinished runningGoals =
-      firstJust
-        <$> mapM
-          ( \(node, task) -> do
-              outcome <- poll task
-              pure ((node,task,) <$> outcome)
-          )
-          (Map.elems runningGoals)
+    firstFinished runningGoals = do
+      plannerOutcome <- pollGoal plannerId runningGoals
+      case plannerOutcome of
+        Just outcome -> pure (Just outcome)
+        Nothing ->
+          case earliestExecutionGoal runningGoals of
+            Nothing -> pure Nothing
+            Just goalId -> pollGoal goalId runningGoals
 
-    firstJust [] = Nothing
-    firstJust (item : rest) = case item of
-      Just value -> Just value
-      Nothing -> firstJust rest
+    pollGoal goalId runningGoals =
+      case Map.lookup goalId runningGoals of
+        Nothing -> pure Nothing
+        Just (node, task) -> fmap ((node,task,) <$>) (poll task)
+
+    earliestExecutionGoal runningGoals =
+      case List.sortOn
+        goalNodeSerialIndex
+        [ node
+        | (node, _task) <- Map.elems runningGoals
+        , goalNodeId node /= plannerId
+        ] of
+        [] -> Nothing
+        node : _ -> Just (goalNodeId node)
 
     processCompleted state runOrder mergeOrder replanCount running node outcome =
       case outcome of
@@ -242,6 +252,16 @@ runConcurrentChaseWithPlanner runner graph plannerId planReady =
         Right (Right result)
           | agentRunResultGoal result /= goalNodeId node ->
               pure (Left "agent result goal id does not match scheduled goal")
+          | goalNodeId node == plannerId ->
+              case completeGoal result state of
+                Left err -> pure (Left err)
+                Right completed ->
+                  loop
+                    completed
+                    (runOrder <> [goalNodeId node])
+                    mergeOrder
+                    replanCount
+                    running
           | otherwise -> do
               merged <- concurrentChaseMergeGoal runner result
               case merged of

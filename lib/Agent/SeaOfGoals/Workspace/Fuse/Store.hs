@@ -11,6 +11,7 @@ module Agent.SeaOfGoals.Workspace.Fuse.Store
   , listDirectory
   , localPath
   , readFile
+  , readSymbolicLink
   , renamePath
   , statPath
   , touchPath
@@ -77,6 +78,7 @@ import System.FilePath
   , takeDirectory
   , (</>)
   )
+import System.Posix.Files qualified as Posix
 import Prelude hiding
   ( readFile
   , writeFile
@@ -226,6 +228,15 @@ readFile handle path = do
       if localExists
         then ByteString.readFile localPathValue
         else ByteString.readFile (basePath handle relativePath)
+
+readSymbolicLink :: Handle -> FilePath -> IO FilePath
+readSymbolicLink handle path = do
+  relativePath <- normalizePath path
+  recordAccess handle (MetadataRead relativePath)
+  maybeRealPath <- statPath handle relativePath
+  case maybeRealPath of
+    Nothing -> ioError (userError ("workspace path does not exist: " <> relativePath))
+    Just realPath -> Posix.readSymbolicLink realPath
 
 writeFile :: Handle -> FilePath -> ByteString -> IO ()
 writeFile handle path content = do

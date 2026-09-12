@@ -21,6 +21,7 @@ import Agent.SeaOfGoals.Trace
   ( HarnessEvent
       ( AssistantMessageObserved
       , CodexEventObserved
+      , ModelPhaseObserved
       , ModelUsageObserved
       , ProcessFinished
       , ProcessStarted
@@ -299,17 +300,20 @@ runPiSdkProcess config eventSink goalId workspace controlRoot prompt history = d
                     "/pi-root"
                     BindReadOnly
                 , BwrapCommand.Mount
-                    (takeDirectory (piProcessNodeBinary config))
-                    "/node-bin"
+                    (nodeRootFromBinary (piProcessNodeBinary config))
+                    "/node-runtime"
                     BindReadOnly
                 ]
-            , BwrapCommand.viewEnv = [("SOG_PI_ROOT", "/pi-root")]
+            , BwrapCommand.viewEnv =
+                [ ("SOG_PI_ROOT", "/pi-root")
+                , ("PATH", "/node-runtime/bin:/usr/local/bin:/usr/bin:/bin")
+                ]
             , BwrapCommand.viewUnsetEnv = []
             , BwrapCommand.viewDefaultCwd = "/workspace"
             }
           ExecSpec
             { execArgv =
-                [ "/node-bin/" <> Text.pack (takeFileName (piProcessNodeBinary config))
+                [ "/node-runtime/bin/" <> Text.pack (takeFileName (piProcessNodeBinary config))
                 , "/sog-pi/sog-sdk-runner.mjs"
                 ]
             , execCwd = "/workspace"
@@ -324,6 +328,8 @@ runPiSdkProcess config eventSink goalId workspace controlRoot prompt history = d
               (takeDirectory binary)
           )
       )
+
+  nodeRootFromBinary = takeDirectory . takeDirectory
 
   decode = TextEncoding.decodeUtf8With lenientDecode
   sdkFailure message = PiProcessResult 126 False "" message
@@ -471,6 +477,8 @@ emitPiEvent eventSink goalId line =
 mapPiEvent :: (HarnessEvent -> IO ()) -> Maybe Text -> Value -> IO ()
 mapPiEvent eventSink goalId (Object objectValue) =
   case textField "type" objectValue of
+    Just "message_start" ->
+      eventSink (ModelPhaseObserved "model_wait" Nothing "message_start" goalId)
     Just "message_end" ->
       case KeyMap.lookup (Key.fromString "message") objectValue of
         Just (Object message) ->
@@ -501,7 +509,8 @@ mapPiEvent eventSink goalId (Object objectValue) =
                 goalId
             )
         _ -> pure ()
-    Just "message_update" ->
+    Just "message_update" -> do
+      emitModelPhase eventSink goalId objectValue
       case KeyMap.lookup (Key.fromString "usage") objectValue of
         Just (Object usage) ->
           eventSink
@@ -519,6 +528,34 @@ mapPiEvent eventSink goalId (Object objectValue) =
     let content = textContent message
     if Text.null content then pure () else eventSink (constructor content)
 mapPiEvent _ _ _ = pure ()
+
+emitModelPhase
+  :: (HarnessEvent -> IO ()) -> Maybe Text -> KeyMap.KeyMap Value -> IO ()
+emitModelPhase eventSink goalId objectValue =
+  case KeyMap.lookup (Key.fromString "assistantMessageEvent") objectValue of
+    Just (Object assistantEvent) ->
+      case textField "type" assistantEvent of
+        Just streamEvent
+          | streamEvent `elem` ["thinking_start", "thinking_delta", "thinking_end"] ->
+              emit streamEvent "reasoning"
+          | streamEvent
+              `elem` [ "text_start"
+                     , "text_delta"
+                     , "text_end"
+                     , "toolcall_start"
+                     , "toolcall_delta"
+                     , "toolcall_end"
+                     ] ->
+              emit streamEvent "generation"
+        _ -> pure ()
+     where
+      responseId =
+        case KeyMap.lookup (Key.fromString "partial") assistantEvent of
+          Just (Object partial) -> textField "responseId" partial
+          _ -> Nothing
+      emit streamEvent phase =
+        eventSink (ModelPhaseObserved phase responseId streamEvent goalId)
+    _ -> pure ()
 
 textField :: Text -> KeyMap.KeyMap Value -> Maybe Text
 textField name objectValue =

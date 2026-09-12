@@ -4,7 +4,7 @@ SKILL_PATH ?=
 COMPILED_GOALS_OUT ?= compiled-goals.json
 SCFG_PYTHON ?= /home/erchius/development/scfg/scfg-package/.venv/bin/python
 
-.PHONY: lint test analyze-trace plot-goal-coverage plot-goal-phases compile-skill compile-skill-with-preload-planner compile-skill-bootstrap compile-skill-bootstrap-with-preload-planner build-workflows smoke-containerd smoke-bwrap experiment experiment-concurrent experiment-codex experiment-codex-fuse experiment-codex-fuse-preload experiment-pi experiment-pi-concurrent experiment-pi-concurrent-planner experiment-no-scfg experiment-nextjs-performance experiment-database-migrations experiment-mysql2postgres experiment-test-with-postgres experiment-docker-development experiments experiments-no-scfg view-trace serve-traces
+.PHONY: lint test analyze-trace plot-goal-coverage plot-goal-phases compile-skill compile-skill-with-preload-planner compile-skill-bootstrap compile-skill-bootstrap-with-preload-planner build-workflows smoke-containerd smoke-bwrap experiment experiment-concurrent experiment-codex experiment-codex-fuse experiment-codex-fuse-preload experiment-pi experiment-pi-concurrent experiment-pi-concurrent-planner experiment-pi-fuse-concurrent-planner experiment-no-scfg experiment-nextjs-performance experiment-database-migrations experiment-mysql2postgres experiment-test-with-postgres experiment-docker-development experiments experiments-no-scfg view-trace serve-traces
 
 lint:
 	fourmolu --config ./fourmolu.yaml -i lib/ test/ test-suite/agent-runner/ compiler/ compiler-bootstrap/ smoke/ test-fuse/
@@ -86,6 +86,10 @@ experiment-pi-concurrent:
 experiment-pi-concurrent-planner:
 	test -n "$(SKILL_EXPERIMENT)"
 	SOG_AGENT_RUNNER=pi SOG_EXPERIMENT_DRIVER=host SOG_SCHEDULER=concurrent SOG_INCREMENTAL_PLANNER=1 SOG_PRELOAD_GOAL_CONTEXT=1 bash test-suite/skill-experiments/run-experiment.sh "$(SKILL_EXPERIMENT)"
+
+experiment-pi-fuse-concurrent-planner:
+	test -n "$(SKILL_EXPERIMENT)"
+	SOG_AGENT_RUNNER=pi SOG_EXPERIMENT_DRIVER=host SOG_SCHEDULER=concurrent SOG_CONCURRENT_WORKSPACE=fuse SOG_CABAL_FLAGS="-f fuse" SOG_INCREMENTAL_PLANNER=1 SOG_PRELOAD_GOAL_CONTEXT=1 SOG_PI_HISTORY_HANDOFF=0 SOG_HARNESS_LIFECYCLE=0 bash test-suite/skill-experiments/run-experiment.sh "$(SKILL_EXPERIMENT)"
 
 experiment-no-scfg:
 	test -n "$(SKILL_EXPERIMENT)"

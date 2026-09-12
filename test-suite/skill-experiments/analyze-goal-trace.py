@@ -6,6 +6,7 @@ import datetime
 import json
 import re
 from collections import defaultdict
+from pathlib import Path
 
 
 def timestamp(value):
@@ -20,7 +21,9 @@ def is_write(name, arguments):
     command = str(arguments.get("command", ""))
     return bool(
         re.search(
-            r"\b(sed\s+-i|perl\s+-i|tee|mv|cp|rm|mkdir|touch|npm\s+install|git\s+(apply|checkout|reset))\b",
+            r"\b(apply_patch|sed\s+-i|perl\s+-i|tee|mv|cp|rm|mkdir|touch|"
+            r"heavy-compile\.mjs\s+(build|test)|package\.mjs|npm\s+(run|test|install)|"
+            r"git\s+(apply|checkout|reset))\b",
             command,
         )
     )
@@ -29,11 +32,17 @@ def is_write(name, arguments):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("trace", help="path to sog-trace.jsonl")
+    parser.add_argument(
+        "--mapping",
+        type=Path,
+        help="optional comparison mapping for assigning baseline turns to goals",
+    )
     args = parser.parse_args()
 
     timestamps = []
     turns = defaultdict(list)
     current = {}
+    turn_number = 0
     for line in open(args.trace, encoding="utf-8"):
         event = json.loads(line)
         now = timestamp(event["timestamp"])
@@ -45,7 +54,8 @@ def main():
         raw = wrapper.get("raw_event", {})
         kind = raw.get("type")
         if kind == "turn_start":
-            current[goal] = {"start": now, "calls": []}
+            turn_number += 1
+            current[goal] = {"number": turn_number, "start": now, "calls": []}
         elif kind == "tool_execution_start" and goal in current:
             current[goal]["calls"].append(
                 (raw.get("toolName"), raw.get("arguments") or raw.get("args") or {})
@@ -57,6 +67,19 @@ def main():
 
     if timestamps:
         print(f"Wall time: {(max(timestamps) - min(timestamps)).total_seconds():.1f}s")
+    if args.mapping:
+        mapping = json.loads(args.mapping.read_text(encoding="utf-8"))
+        baseline_turns = {turn["number"]: turn for turn in turns.get(None, [])}
+        turns = {
+            group["id"]: [
+                baseline_turns[number]
+                for number in group.get("baseline_turns", [])
+                if number in baseline_turns
+            ]
+            for group in mapping["groups"]
+            if group.get("baseline_turns")
+        }
+
     print("Goal | Read rounds | Read time | Write rounds | Write time | Goal time")
     print("-----|--------------|-----------|---------------|------------|----------")
     for goal in sorted(turns):

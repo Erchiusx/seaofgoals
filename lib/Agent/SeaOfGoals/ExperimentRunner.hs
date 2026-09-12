@@ -1389,10 +1389,13 @@ runConcurrentGoal
               node
               prompt
           PiAgentRunner ->
-            pure
-              ( Left
-                  "SOG_CONCURRENT_WORKSPACE=fuse currently supports SOG_AGENT_RUNNER=codex only"
-              )
+            runConcurrentPiGoalWithFuse
+              context
+              baseWorkspace
+              runRoot
+              node
+              prompt
+              harnessPredecessorHistory
 
 runConcurrentHarnessGoal
   :: ExperimentContext
@@ -1598,7 +1601,7 @@ runConcurrentCodexGoalWithFuse context pendingHistories baseWorkspace runRoot no
         , FuseStore.specAgentMountPath = "/workspace"
         }
   let mountValue = WorkspaceBackend.mount backend handle
-  codexResult <-
+  (codexResult, preloadedReads) <-
     bracket
       (mountFuseWorkspace handle mountValue)
       unmountFuseWorkspace
@@ -1610,12 +1613,14 @@ runConcurrentCodexGoalWithFuse context pendingHistories baseWorkspace runRoot no
               baseWorkspace
               prompt
           let promptWithPreload = preloadTextPrompt preloaded prompt
-          runCodexGoalProcessWithControlRoot
-            context
-            (WorkspaceBackend.mountHostPath mountValue)
-            controlRoot
-            node
-            promptWithPreload
+          result <-
+            runCodexGoalProcessWithControlRoot
+              context
+              (WorkspaceBackend.mountHostPath mountValue)
+              controlRoot
+              node
+              promptWithPreload
+          pure (result, preloadedGoalContextReads preloaded)
       )
   accessLog <- filterWorkspaceAccesses <$> FuseStore.accessLog handle
   let
@@ -1628,7 +1633,7 @@ runConcurrentCodexGoalWithFuse context pendingHistories baseWorkspace runRoot no
         , agentRunResultSummaryForDependents = summary
         , agentRunResultReads =
             Set.union
-              (preloadedGoalContextReads preloaded)
+              preloadedReads
               (FuseStore.readSet accessLog)
         , agentRunResultWrites = FuseStore.writeSet accessLog
         , agentRunResultSnapshot =
@@ -1656,6 +1661,85 @@ runConcurrentCodexGoalWithFuse context pendingHistories baseWorkspace runRoot no
         )
 #else
 runConcurrentCodexGoalWithFuse _ _ _ _ _ _ =
+  pure (Left "SOG_CONCURRENT_WORKSPACE=fuse requires building SeaOfGoals with -f fuse")
+#endif
+
+runConcurrentPiGoalWithFuse
+  :: ExperimentContext
+  -> FilePath
+  -> FilePath
+  -> GoalNode
+  -> Text
+  -> [LLMInputItem]
+  -> IO (Either Text AgentRunResult)
+#ifdef SOG_FUSE
+runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecessorHistory = do
+  resetDirectory runRoot
+  let
+    storeRoot = runRoot </> "store"
+    controlRoot = runRoot </> "control"
+    backend = FuseStore.Backend storeRoot
+    taskId = unGoalNodeId (goalNodeId node)
+  handle <-
+    WorkspaceBackend.prepareWorkspace
+      backend
+      FuseStore.Spec
+        { FuseStore.specTaskId = taskId
+        , FuseStore.specBasePath = baseWorkspace
+        , FuseStore.specAgentMountPath = "/workspace"
+        }
+  let mountValue = WorkspaceBackend.mount backend handle
+  (piResult, preloadedReads) <-
+    bracket
+      (mountFuseWorkspace handle mountValue)
+      unmountFuseWorkspace
+      ( \_ -> do
+          preloaded <-
+            preloadGoalContextForWorkspace
+              context
+              (Just (goalNodeId node))
+              baseWorkspace
+              prompt
+          result <-
+            runPiSdkProcess
+              (experimentPiProcessConfig context)
+              ( \event -> do
+                  experimentEventSink context event
+                  recordPiPlanPublication context controlRoot event
+              )
+              (Just taskId)
+              (WorkspaceBackend.mountHostPath mountValue)
+              controlRoot
+              (piPrompt context prompt)
+              ( (if experimentPiHistoryHandoff context then predecessorHistory else [])
+                  <> preloadedGoalContextHistory preloaded
+              )
+          pure (result, preloadedGoalContextReads preloaded)
+      )
+  accessLog <- filterWorkspaceAccesses <$> FuseStore.accessLog handle
+  let
+    status = piGoalStatus piResult
+    summary = piGoalSummary node piResult
+    result =
+      AgentRunResult
+        { agentRunResultGoal = goalNodeId node
+        , agentRunResultStatus = status
+        , agentRunResultSummaryForDependents = summary
+        , agentRunResultReads =
+            Set.union preloadedReads (FuseStore.readSet accessLog)
+        , agentRunResultWrites = FuseStore.writeSet accessLog
+        , agentRunResultSnapshot =
+            SnapshotId
+              ( taskId
+                  <> ":"
+                  <> Text.pack (storeRoot </> Text.unpack taskId </> "files")
+              )
+        }
+  if serialGoalStatusIsTerminal status
+    then pure (Right result)
+    else pure (Left ("concurrent pi goal failed: " <> status))
+#else
+runConcurrentPiGoalWithFuse _ _ _ _ _ _ =
   pure (Left "SOG_CONCURRENT_WORKSPACE=fuse requires building SeaOfGoals with -f fuse")
 #endif
 

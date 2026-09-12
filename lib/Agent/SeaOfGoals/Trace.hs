@@ -54,6 +54,12 @@ data HarnessEvent
       , eventReasoningOutputTokens :: Maybe Int
       , eventTotalTokens :: Int
       }
+  | ModelPhaseObserved
+      { eventModelPhase :: Text
+      , eventModelResponseId :: Maybe Text
+      , eventModelStreamEvent :: Text
+      , eventModelGoalId :: Maybe Text
+      }
   | ToolCallObserved
       { eventCallId :: Text
       , eventToolName :: Text
@@ -154,6 +160,14 @@ instance ToJSON HarnessEvent where
             , "reasoning_output_tokens" .= reasoningOutputTokens
             , "total_tokens" .= totalTokens
             ]
+      ModelPhaseObserved phase responseId streamEvent goalId ->
+        base
+          "model_phase"
+          [ "phase" .= phase
+          , "response_id" .= responseId
+          , "stream_event" .= streamEvent
+          , "goal_id" .= goalId
+          ]
       ToolCallObserved callId toolName arguments activeSubgoal ->
         base
           "tool_call"
@@ -249,6 +263,7 @@ eventType event =
     UserMessageObserved{} -> "user_message"
     ReasoningObserved{} -> "reasoning_observed"
     ModelUsageObserved{} -> "model_usage"
+    ModelPhaseObserved{} -> "model_phase"
     ToolCallObserved{} -> "tool_call"
     ToolResultObserved{} -> "tool_result"
     SubgoalStarted{} -> "subgoal_started"

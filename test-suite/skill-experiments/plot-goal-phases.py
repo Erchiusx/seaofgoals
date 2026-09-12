@@ -1,15 +1,32 @@
 #!/usr/bin/env python3
-"""Render read, write, and end_goal turn coverage from a SOG JSONL trace."""
+"""Render streamed model and tool phase coverage from a SOG JSONL trace."""
 
 import argparse
 import datetime
 import html
 import json
+import re
 from collections import defaultdict
 
 
 def timestamp(value):
     return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def command_writes(tool_name, arguments):
+    if tool_name in {"write", "edit"}:
+        return True
+    if tool_name != "bash":
+        return False
+    command = str(arguments.get("command", ""))
+    return bool(
+        re.search(
+            r"\b(apply_patch|sed\s+-i|perl\s+-i|tee|mv|cp|rm|mkdir|touch|"
+            r"heavy-compile\.mjs\s+(build|test)|package\.mjs|npm\s+(run|test|install)|"
+            r"git\s+(apply|checkout|reset))\b",
+            command,
+        )
+    )
 
 
 def tool_names(value):
@@ -27,6 +44,35 @@ def tool_names(value):
     return []
 
 
+def stream_kind(value):
+    """Classify Pi's incremental event, rather than its cumulative partial."""
+    if isinstance(value, dict):
+        event_type = value.get("type", "")
+        if event_type in {"thinking_start", "thinking_delta", "thinking_end"}:
+            return "reasoning"
+        if event_type in {
+            "text_start",
+            "text_delta",
+            "text_end",
+            "toolcall_start",
+            "toolcall_delta",
+            "toolcall_end",
+        }:
+            return "generation"
+        for key, child in value.items():
+            if key == "partial":
+                continue
+            kind = stream_kind(child)
+            if kind:
+                return kind
+    elif isinstance(value, list):
+        for child in value:
+            kind = stream_kind(child)
+            if kind:
+                return kind
+    return None
+
+
 def phases(path):
     active = {}
     result = defaultdict(list)
@@ -35,27 +81,61 @@ def phases(path):
         event = record.get("event", {})
         goal = event.get("goal_id")
         if not goal:
-            continue
+            goal = event.get("goal_id")
         raw = event.get("raw_event", {})
+        direct_kind = event.get("type")
+        if not goal or direct_kind == "model_usage":
+            continue
+        if direct_kind == "model_phase":
+            phase = event.get("phase", "generation")
+            if goal in active:
+                active[goal][3].append((timestamp(record["timestamp"]), phase))
+            continue
         kind = raw.get("type")
         if kind == "message" and isinstance(raw.get("message"), dict):
             kind = raw["message"].get("type")
         if kind == "turn_start":
-            active[goal] = [timestamp(record["timestamp"]), []]
+            active[goal] = [timestamp(record["timestamp"]), [], {}, []]
         elif kind == "turn_end" and goal in active:
-            start, names = active.pop(goal)
+            start, _, tool_intervals, streamed = active.pop(goal)
             end = timestamp(record["timestamp"])
-            if "end_goal" in names:
-                phase = "end_goal"
-            elif any(name in {"write", "edit"} for name in names):
-                phase = "write"
-            elif names:
-                phase = "read"
-            else:
-                phase = "read"
-            result[goal].append((phase, start, end))
+            points = {start, end}
+            for begin, finish, _ in tool_intervals.values():
+                points.update((begin, finish))
+            points.update(point for point, _ in streamed)
+            points = sorted(point for point in points if start <= point <= end)
+            model_phase = "generation"
+            for begin, finish in zip(points, points[1:]):
+                for marker, phase in reversed(streamed):
+                    if marker <= begin:
+                        model_phase = phase
+                        break
+                phase = model_phase
+                for tool_begin, tool_end, tool_phase in tool_intervals.values():
+                    if tool_begin <= begin and finish <= tool_end:
+                        phase = tool_phase
+                        break
+                if finish > begin:
+                    result[goal].append((phase, begin, finish))
         elif goal in active:
-            active[goal][1].extend(tool_names(raw))
+            event_time = timestamp(record["timestamp"])
+            if kind == "tool_execution_start":
+                tool_name = raw.get("toolName", "")
+                arguments = raw.get("args") or raw.get("arguments") or {}
+                tool_phase = "write" if command_writes(tool_name, arguments) else "read"
+                active[goal][2][raw.get("toolCallId", str(event_time))] = [
+                    event_time,
+                    event_time,
+                    tool_phase,
+                ]
+            elif kind == "tool_execution_end":
+                tool_id = raw.get("toolCallId")
+                if tool_id in active[goal][2]:
+                    active[goal][2][tool_id][1] = event_time
+            elif kind in {"message_update", "message_start", "message_end", "assistant_message"}:
+                stream_phase = stream_kind(raw)
+                if stream_phase:
+                    active[goal][3].append((event_time, stream_phase))
     return result
 
 
@@ -63,14 +143,21 @@ def render(data, output):
     start = min(item[1] for items in data.values() for item in items)
     finish = max(item[2] for items in data.values() for item in items)
     total = max((finish - start).total_seconds(), 0.001)
-    left, width, row = 120, 1100, 34
+    left, width, row = 150, 1800, 38
     goals = sorted(data)
     height = 48 + row * len(goals) + 78
 
     def x(value):
         return left + (width - left - 24) * (value - start).total_seconds() / total
 
-    colors = {"read": "#4f86c6", "write": "#d9822b", "end_goal": "#7a5af8"}
+    colors = {
+        "model_wait": "#94a3b8",
+        "reasoning": "#8b5cf6",
+        "generation": "#0f766e",
+        "read": "#4f86c6",
+        "write": "#d9822b",
+        "end_goal": "#7a5af8",
+    }
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
         '<style>text{font:13px sans-serif;fill:#202124}.label{font-weight:600}.grid{stroke:#e5e7eb}</style>',
@@ -86,7 +173,7 @@ def render(data, output):
         for phase, begin, end in data[goal]:
             grouped[phase] = grouped.get(phase, 0) + (end - begin).total_seconds()
         cursor = first
-        for phase in ("read", "write", "end_goal"):
+        for phase in ("model_wait", "reasoning", "generation", "read", "write", "end_goal"):
             duration = grouped.get(phase, 0)
             if not duration:
                 continue
@@ -112,7 +199,7 @@ def render(data, output):
     for phase, color in colors.items():
         lines.append(f'<rect x="{legend_x}" y="{legend_y}" width="12" height="12" fill="{color}"/>')
         lines.append(f'<text x="{legend_x+18}" y="{legend_y+11}">{phase}</text>')
-        legend_x += 100
+        legend_x += 135
     lines.append("</svg>")
     svg = "\n".join(lines)
     if output.endswith(".html"):
@@ -126,9 +213,14 @@ def render(data, output):
         open(output, "w", encoding="utf-8").write(svg)
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument("trace")
-parser.add_argument("--out", required=True)
-args = parser.parse_args()
-render(phases(args.trace), args.out)
-print(f"wrote {args.out}")
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("trace")
+    parser.add_argument("--out", required=True)
+    args = parser.parse_args()
+    render(phases(args.trace), args.out)
+    print(f"wrote {args.out}")
+
+
+if __name__ == "__main__":
+    main()

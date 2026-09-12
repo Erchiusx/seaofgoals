@@ -180,6 +180,7 @@ fuseWorkspaceOperationsWithReady
 fuseWorkspaceOperationsWithReady ready handle =
   defaultFuseOperations
     { fuseGetattr = Just (getattr handle)
+    , fuseReadlink = Just (readlink handle)
     , fuseOpendir = Just (opendir handle)
     , fuseReaddir = Just (readdir handle)
     , fuseReleasedir = Just (\_ _ -> pure eOK)
@@ -209,6 +210,13 @@ getattr handle path _ = do
   case maybeRealPath of
     Nothing -> pure (Left eNOENT)
     Just realPath -> Right <$> getFileStat realPath
+
+readlink :: Handle -> FilePath -> IO (Either Errno FilePath)
+readlink handle path = do
+  debugFuse ("readlink " <> path)
+  tryErrno $ do
+    storePath <- fusePathToStorePath path
+    Store.readSymbolicLink handle storePath
 
 opendir :: Handle -> FilePath -> IO (Either Errno ())
 opendir handle path = do

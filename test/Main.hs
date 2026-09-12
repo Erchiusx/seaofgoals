@@ -1563,6 +1563,7 @@ plannerChaseSchedulerTest :: IO ()
 plannerChaseSchedulerTest = do
   plannedRef <- newIORef (Set.empty :: Set.Set GoalNodeId)
   executionWhilePlanningRef <- newIORef False
+  mergedRef <- newIORef []
   let
     graph =
       GoalGraph
@@ -1570,6 +1571,7 @@ plannerChaseSchedulerTest = do
             Map.fromList
               [ (goalId "G000", schedulerGoal "G000" 0)
               , (goalId "G001", schedulerGoal "G001" 1)
+              , (goalId "G002", schedulerGoal "G002" 2)
               ]
         , goalGraphEdges = Set.empty
         }
@@ -1580,15 +1582,24 @@ plannerChaseSchedulerTest = do
         , concurrentChaseRunGoal = \node -> do
             if goalNodeId node == goalId "G000"
               then do
-                atomicModifyIORef' plannedRef (\ids -> (Set.insert (goalId "G001") ids, ()))
+                atomicModifyIORef'
+                  plannedRef
+                  ( \ids ->
+                      ( Set.insert (goalId "G002") (Set.insert (goalId "G001") ids)
+                      , ()
+                      )
+                  )
                 threadDelay 100000
               else do
                 planned <- readIORef plannedRef
                 when
                   (goalId "G001" `Set.member` planned)
                   (writeIORef executionWhilePlanningRef True)
+                when (goalNodeId node == goalId "G001") (threadDelay 50000)
             pure (Right (fakeAgentRunResult node))
-        , concurrentChaseMergeGoal = \_ -> pure (Right ())
+        , concurrentChaseMergeGoal = \result -> do
+            modifyIORef' mergedRef (<> [agentRunResultGoal result])
+            pure (Right ())
         }
   result <-
     runConcurrentChaseWithPlanner
@@ -1598,11 +1609,20 @@ plannerChaseSchedulerTest = do
       (\nodeId -> Set.member nodeId <$> readIORef plannedRef)
   case result of
     Left err -> fail ("expected planner chase success, got " <> Text.unpack err)
-    Right _ -> pure ()
+    Right summary ->
+      assertEqual
+        "planner chase excludes the planner and preserves serial merge order"
+        [goalId "G001", goalId "G002"]
+        (concurrentChaseMergeOrder summary)
   overlapped <- readIORef executionWhilePlanningRef
   assertBool
     "planner chase starts a goal after its plan while planner is still running"
     overlapped
+  merged <- readIORef mergedRef
+  assertEqual
+    "planner control work is not passed to workspace merge"
+    [goalId "G001", goalId "G002"]
+    merged
 
 serialSchedulerTest :: IO ()
 serialSchedulerTest = do

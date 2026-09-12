@@ -189,6 +189,18 @@ At runtime, the scheduler can intersect this set with the goals that have
 actually completed or are currently running. Pending goals do not need reruns;
 they only need to respect the newly discovered edge before starting.
 
+The runtime must also preserve the trusted serial order when accepting results.
+Goals may execute concurrently and finish out of order, but a later serial goal
+must not be merged while an earlier running goal is still awaiting merge. If the
+later result were accepted first, `take former, rerun latter` could require
+rolling back an already-materialized workspace, which this baseline does not
+support.
+
+Runtime planning is control-plane work rather than a workspace result. The G000
+planner can overlap execution and publish per-goal plans, but it is completed
+without entering workspace conflict detection or merge ordering. Its generated
+plans are consumed at each goal's actual merged base state.
+
 ## Why This Is a Useful First Baseline
 
 This baseline is simple and reproducible:

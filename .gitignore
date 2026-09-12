@@ -1,6 +1,11 @@
 dist-newstyle/
 dist/
 test-output/
+.chart-data-*/
+.codex-finalizer/
+.pptx-build/
+**/__pycache__/
+*.pyc
 
 # Local editor state
 .vscode/
