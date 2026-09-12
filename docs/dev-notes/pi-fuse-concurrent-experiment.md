@@ -49,3 +49,18 @@ The heavy work did overlap: G005 build used one 33.5-second write round and G006
 test used one 31.6-second write round. This sample remained slower because G000
 used nine planning rounds totaling 100.0 seconds. Workspace copying is therefore
 not the remaining explanation for the gap in this run; planner generation is.
+
+## Planner Input And Goal Completion
+
+G000 produces preload plans for execution goals; it must not consume an
+automatically generated preload plan itself. A real-qsv run accidentally gave
+G000 278 synthetic history entries containing about 624 KB of repository data.
+Pi measured 126,310 input tokens and spent about 21 seconds compacting that
+history before its first turn. The common preload entry point now returns empty
+context for G000, while later goals still consume plans published by G000.
+
+Pi goals complete by allowing the Pi session to stop naturally. They are not
+required to call a lifecycle tool or generate a successor summary. The goal
+prompt asks the model to stop immediately after its assigned work, and the Pi
+SDK runner does not expose `end_goal`. Process success, timeout, and exit status
+remain the harness's completion signal.

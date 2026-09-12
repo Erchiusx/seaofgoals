@@ -1080,7 +1080,7 @@ preloadGoalContextForWorkspace
   -> Text
   -> IO PreloadedGoalContext
 preloadGoalContextForWorkspace context maybeGoalId workspaceRoot prompt = do
-  if historyHandoffReplacesPreload context
+  if isPlannerGoal maybeGoalId || historyHandoffReplacesPreload context
     then pure emptyPreloadedGoalContext
     else do
       dynamicPlan <- readIORef (experimentDynamicGoalContextPreloadPlan context)
@@ -1122,6 +1122,9 @@ preloadGoalContextForWorkspace context maybeGoalId workspaceRoot prompt = do
           { preloadedGoalContextHistory =
               preloadedGoalContextHistory preloaded <> predictedHistory
           }
+
+isPlannerGoal :: Maybe GoalNodeId -> Bool
+isPlannerGoal = maybe False ((== "G000") . unGoalNodeId)
 
 historyHandoffReplacesPreload :: ExperimentContext -> Bool
 historyHandoffReplacesPreload context =

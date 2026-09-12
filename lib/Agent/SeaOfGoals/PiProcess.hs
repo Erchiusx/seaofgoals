@@ -101,18 +101,15 @@ defaultPiProcessConfig = do
         exists <- doesFileExist candidate
         pure (if exists then candidate else maybe "pi" id pathBinary)
       Nothing -> pure (maybe "pi" id pathBinary)
-  let extensionCandidate = workingDirectory </> "pi/sog-goal-extension.mjs"
-  extensionExists <- doesFileExist extensionCandidate
+  let sdkRunnerCandidate = workingDirectory </> "pi/sog-sdk-runner.mjs"
+  sdkRunnerExists <- doesFileExist sdkRunnerCandidate
   pure
     PiProcessConfig
       { piProcessBinary = binary
-      , piProcessExtension =
-          if extensionExists then Just extensionCandidate else Nothing
+      , piProcessExtension = Nothing
       , piProcessNodeBinary = maybe "node" id nodeBinary
       , piProcessSdkRunner =
-          if extensionExists
-            then Just (workingDirectory </> "pi/sog-sdk-runner.mjs")
-            else Nothing
+          if sdkRunnerExists then Just sdkRunnerCandidate else Nothing
       , piProcessModel = Nothing
       , piProcessTimeout = ExecNoTimeout
       , piProcessBwrapBinary = bwrapBinary

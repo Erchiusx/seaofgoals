@@ -7,29 +7,6 @@ const { createAgentSession, ModelRuntime, SessionManager } = await import(
   `${piRoot}/packages/coding-agent/dist/index.js`,
 );
 
-const endGoalTool = {
-  name: "end_goal",
-  label: "End Goal",
-  description: "Mark the assigned SeaOfGoals goal complete and provide its result.",
-  promptSnippet: "Finish the assigned goal with a status and summary",
-  parameters: {
-    type: "object",
-    properties: {
-      status: { type: "string", enum: ["success", "failed"] },
-      summary: { type: "string" },
-    },
-    required: ["status", "summary"],
-    additionalProperties: false,
-  },
-  async execute(_toolCallId, params) {
-    return {
-      content: [{ type: "text", text: `Goal ${params.status}: ${params.summary}` }],
-      details: { status: params.status, summary: params.summary },
-      terminate: true,
-    };
-  },
-};
-
 function planTool(name, description, prefix) {
   return {
     name,
@@ -132,7 +109,7 @@ async function run(request) {
     modelRuntime,
     sessionManager,
     tools: ["read", "bash", "edit", "write", "set_preload_plan", "set_predicted_actions_plan"],
-    customTools: [endGoalTool, ...plannerTools],
+    customTools: plannerTools,
   });
   const unsubscribe = session.subscribe((event) => {
     process.stdout.write(`${JSON.stringify(event)}\n`);
