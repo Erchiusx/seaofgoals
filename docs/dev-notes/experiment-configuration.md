@@ -55,14 +55,20 @@ The version 1 shape is:
   "cache": {
     "retention": "24h"
   },
+  "build": {
+    "fuseSupport": true
+  },
   "runtimeConfig": "seaofgoals.config.json",
   "skillPath": "/path/to/SKILL.md"
 }
 ```
 
 Paths may be absolute, start with `~`, or be relative to the repository root.
-The launcher derives `-f fuse` from the FUSE backend. A cache key may be given
-as `cache.key`; otherwise `run-experiment.sh` derives one from the effective
+`build.fuseSupport` controls the Cabal FUSE flag independently of the selected
+workspace backend. Paired baseline and concurrent configurations should both
+enable it so alternating runs reuse one build rather than recompiling the whole
+package. A FUSE workspace requires this capability. A cache key may be given as
+`cache.key`; otherwise `run-experiment.sh` derives one from the effective
 experiment settings.
 
 `workspace.conflictMode` is either `strict` or `file-writes-only`. The latter

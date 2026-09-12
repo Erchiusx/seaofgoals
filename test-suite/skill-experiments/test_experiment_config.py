@@ -22,8 +22,10 @@ class ExperimentConfigTest(unittest.TestCase):
 
         self.assertEqual("file-writes-only", concurrent["conflict_mode"])
         self.assertEqual("fuse", concurrent["workspace_backend"])
+        self.assertTrue(concurrent["fuse_support"])
         self.assertFalse(baseline["workflow_enabled"])
         self.assertEqual("serial", baseline["scheduler"])
+        self.assertTrue(baseline["fuse_support"])
 
     def test_managed_environment_does_not_leak_between_runs(self):
         config = {
@@ -42,6 +44,7 @@ class ExperimentConfigTest(unittest.TestCase):
             "lifecycle": False,
             "cache_key": None,
             "cache_retention": "24h",
+            "fuse_support": True,
             "runtime_config": Path("/runtime.json"),
             "skill_path": None,
         }

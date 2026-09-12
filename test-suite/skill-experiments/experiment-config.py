@@ -77,6 +77,7 @@ def load_config(path, repo_root):
             "history",
             "harness",
             "cache",
+            "build",
             "runtimeConfig",
             "skillPath",
         },
@@ -132,6 +133,13 @@ def load_config(path, repo_root):
     if not isinstance(cache_retention, str) or not cache_retention:
         raise ValueError("cache.retention must be a non-empty string")
 
+    build = config.get("build", {})
+    require_keys(build, {"fuseSupport"}, "build")
+    fuse_support = boolean(
+        build.get("fuseSupport", workspace_backend == "fuse"),
+        "build.fuseSupport",
+    )
+
     experiment_dir = repo_root / "test-suite" / "skill-experiments" / config["experiment"]
     graph = repo_path(
         repo_root,
@@ -149,6 +157,8 @@ def load_config(path, repo_root):
 
     if scheduler != "concurrent" and workspace_backend == "fuse":
         raise ValueError("workspace.backend=fuse requires scheduler=concurrent")
+    if workspace_backend == "fuse" and not fuse_support:
+        raise ValueError("workspace.backend=fuse requires build.fuseSupport=true")
     if incremental and not workflow_enabled:
         raise ValueError("planning.incremental requires workflow.enabled=true")
     if preload and not incremental:
@@ -180,6 +190,7 @@ def load_config(path, repo_root):
         "lifecycle": lifecycle,
         "cache_key": cache_key,
         "cache_retention": cache_retention,
+        "fuse_support": fuse_support,
         "runtime_config": runtime_config,
         "skill_path": skill_path,
     }
@@ -205,7 +216,7 @@ def build_environment(config):
         "SOG_PROMPT_CACHE_RETENTION": config["cache_retention"],
         "SOG_CONFIG_FILE": str(config["runtime_config"]),
     }
-    if config["workspace_backend"] == "fuse":
+    if config["fuse_support"]:
         values["SOG_CABAL_FLAGS"] = "-f fuse"
     if config["cache_key"] is not None:
         values["SOG_PROMPT_CACHE_KEY"] = config["cache_key"]

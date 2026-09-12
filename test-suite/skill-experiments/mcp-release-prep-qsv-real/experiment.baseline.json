@@ -26,6 +26,9 @@
   "cache": {
     "retention": "24h"
   },
+  "build": {
+    "fuseSupport": true
+  },
   "runtimeConfig": "seaofgoals.config.json",
   "skillPath": "/home/erchius/datasets/SSL/docs/testsets/mcp-release-prep/SKILL.md"
 }
