@@ -1,0 +1,23 @@
+{
+  "title": "Real qsv release pair 3: single Pi versus concurrent SOG",
+  "goal_details": {
+    "G000": "runtime planning",
+    "G001": "release inspection",
+    "G002": "metadata edits",
+    "G003": "documentation edits",
+    "G004": "changelog edit",
+    "G005": "TypeScript build",
+    "G006": "test compilation and suite",
+    "G007": "MCPB packaging",
+    "G008": "final verification"
+  },
+  "groups": [
+    {"id": "G000", "name": "runtime planning", "baseline_turns": [], "concurrent_goals": ["G000"]},
+    {"id": "G001", "name": "release inspection", "baseline_turns": [1, 2, 3, 4], "concurrent_goals": ["G001"]},
+    {"id": "G002-G004", "name": "release file edits", "baseline_turns": [5, 6, 7, 8, 9, 10, 11, 12, 13, 14], "shared_baseline": true, "concurrent_goals": ["G002", "G003", "G004"]},
+    {"id": "G005", "name": "TypeScript build", "baseline_turns": [15, 16, 17], "concurrent_goals": ["G005"]},
+    {"id": "G006", "name": "test compilation and suite", "baseline_turns": [18], "concurrent_goals": ["G006"]},
+    {"id": "G007", "name": "MCPB packaging", "baseline_turns": [19], "concurrent_goals": ["G007"]},
+    {"id": "G008", "name": "final verification", "baseline_turns": [20, 21, 22, 23], "concurrent_goals": ["G008"]}
+  ]
+}
