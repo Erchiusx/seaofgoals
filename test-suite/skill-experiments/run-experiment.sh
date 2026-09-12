@@ -35,7 +35,7 @@ fi
 
 skill_env_name="$(printf '%s_SKILL' "$experiment_name" | tr '[:lower:]-' '[:upper:]_')"
 default_skill_path="/home/erchius/datasets/SSL/docs/testsets/$experiment_name/SKILL.md"
-skill_path="${!skill_env_name:-$default_skill_path}"
+skill_path="${SOG_SKILL_PATH:-${!skill_env_name:-$default_skill_path}}"
 if [ ! -f "$skill_path" ]; then
   echo "missing skill source: $skill_path" >&2
   exit 2
@@ -123,6 +123,9 @@ fi
 
 mkdir -p "$workspace_dir"
 mkdir -p "$control_dir"
+if [ -n "${SOG_EXPERIMENT_CONFIG:-}" ]; then
+  cp "$SOG_EXPERIMENT_CONFIG" "$control_dir/experiment.json"
+fi
 ln -sfn "workspaces/$run_id" "$runs_dir/current.next"
 mv -Tf "$runs_dir/current.next" "$runs_dir/current"
 ln -sfn "control/$run_id" "$runs_dir/control-current.next"

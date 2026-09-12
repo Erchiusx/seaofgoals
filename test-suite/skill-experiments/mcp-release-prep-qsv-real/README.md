@@ -19,19 +19,21 @@ test-suite/skill-experiments/mcp-release-prep-qsv-real/prepare-fixture.sh
 Run the speculative FUSE experiment:
 
 ```sh
-MCP_RELEASE_PREP_QSV_REAL_SKILL=/home/erchius/datasets/SSL/docs/testsets/mcp-release-prep/SKILL.md \
-SOG_MODEL=gpt-5.6 SOG_PI_MODEL=gpt-5.6 \
-make experiment-pi-fuse-concurrent-planner SKILL_EXPERIMENT=mcp-release-prep-qsv-real
+make run-experiment-config \
+  CONFIG=test-suite/skill-experiments/mcp-release-prep-qsv-real/experiment.concurrent.json
 ```
 
 Run the direct single-Pi baseline:
 
 ```sh
-MCP_RELEASE_PREP_QSV_REAL_SKILL=/home/erchius/datasets/SSL/docs/testsets/mcp-release-prep/SKILL.md \
-SOG_DISABLE_WORKFLOW=1 SOG_AGENT_RUNNER=pi SOG_EXPERIMENT_DRIVER=host \
-SOG_MODEL=gpt-5.6 SOG_PI_MODEL=gpt-5.6 \
-make experiment SKILL_EXPERIMENT=mcp-release-prep-qsv-real
+make run-experiment-config \
+  CONFIG=test-suite/skill-experiments/mcp-release-prep-qsv-real/experiment.baseline.json
 ```
+
+Validate and inspect either configuration without running the model by using
+`make show-experiment-config CONFIG=...`. Provider credentials remain outside
+the JSON file; `run-experiment.sh` loads `~/.secrets/rise` or
+`~/.secrets/openai` when needed.
 
 `npm run build` and `npm test` both compile into `dist/`. Their optimistic
 parallel placement intentionally exercises dynamic file-conflict discovery;

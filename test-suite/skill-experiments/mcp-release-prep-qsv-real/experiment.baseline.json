@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "experiment": "mcp-release-prep-qsv-real",
+  "runner": "pi",
+  "driver": "host",
+  "model": "gpt-5.6",
+  "scheduler": "serial",
+  "workflow": {
+    "enabled": false
+  },
+  "workspace": {
+    "backend": "copy-tree",
+    "sandbox": "bwrap",
+    "conflictMode": "strict"
+  },
+  "planning": {
+    "incremental": false,
+    "preload": false
+  },
+  "history": {
+    "piHandoff": false
+  },
+  "harness": {
+    "lifecycle": false
+  },
+  "cache": {
+    "retention": "24h"
+  },
+  "runtimeConfig": "seaofgoals.config.json",
+  "skillPath": "/home/erchius/datasets/SSL/docs/testsets/mcp-release-prep/SKILL.md"
+}

@@ -1,0 +1,81 @@
+# Experiment Configuration
+
+## Purpose
+
+An experiment must be reproducible without reconstructing a long list of shell
+assignments. `seaofgoals.config.json` remains the runtime scheduler tuning file;
+it is not an experiment description. A versioned `experiment.*.json` records
+the runner, model, graph, workspace policy, planner behavior, and history mode
+for one experiment variant.
+
+Run or inspect a configuration with:
+
+```sh
+make show-experiment-config CONFIG=path/to/experiment.json
+make run-experiment-config CONFIG=path/to/experiment.json
+```
+
+The launcher rejects unknown keys and incompatible combinations, clears the
+experiment variables it owns from the inherited environment, then translates
+the validated configuration into the current `SOG_*` process interface. This
+keeps the migration narrow: Haskell components can continue using their
+existing loaders while experiments have one declarative entry point.
+
+## Schema
+
+The version 1 shape is:
+
+```json
+{
+  "version": 1,
+  "experiment": "fixture-directory-name",
+  "runner": "pi",
+  "driver": "host",
+  "model": "gpt-5.6",
+  "scheduler": "concurrent",
+  "workflow": {
+    "enabled": true,
+    "graph": "test-suite/skill-experiments/example/sog.json"
+  },
+  "workspace": {
+    "backend": "fuse",
+    "sandbox": "bwrap",
+    "conflictMode": "strict"
+  },
+  "planning": {
+    "incremental": true,
+    "preload": true
+  },
+  "history": {
+    "piHandoff": false
+  },
+  "harness": {
+    "lifecycle": false
+  },
+  "cache": {
+    "retention": "24h"
+  },
+  "runtimeConfig": "seaofgoals.config.json",
+  "skillPath": "/path/to/SKILL.md"
+}
+```
+
+Paths may be absolute, start with `~`, or be relative to the repository root.
+The launcher derives `-f fuse` from the FUSE backend. A cache key may be given
+as `cache.key`; otherwise `run-experiment.sh` derives one from the effective
+experiment settings.
+
+`workspace.conflictMode` is either `strict` or `file-writes-only`. The latter
+only removes pure directory writes from conflict comparison; regular-file
+write/read conflicts remain conflicts.
+
+## Credentials And Provenance
+
+Credentials are deliberately absent from the configuration schema. The runner
+continues to inherit credentials or load `~/.secrets/rise` and
+`~/.secrets/openai`. Arbitrary environment maps are also excluded from the
+schema so configuration files cannot quietly bypass validation.
+
+At startup, `run-experiment.sh` copies the selected description to
+`runs/control/<run-id>/experiment.json` beside the trace. This captures the
+declared settings for later analysis without storing credentials.

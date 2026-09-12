@@ -4,13 +4,17 @@ SKILL_PATH ?=
 COMPILED_GOALS_OUT ?= compiled-goals.json
 SCFG_PYTHON ?= /home/erchius/development/scfg/scfg-package/.venv/bin/python
 
-.PHONY: lint test analyze-trace plot-goal-coverage plot-goal-phases compile-skill compile-skill-with-preload-planner compile-skill-bootstrap compile-skill-bootstrap-with-preload-planner build-workflows smoke-containerd smoke-bwrap experiment experiment-concurrent experiment-codex experiment-codex-fuse experiment-codex-fuse-preload experiment-pi experiment-pi-concurrent experiment-pi-concurrent-planner experiment-pi-fuse-concurrent-planner experiment-no-scfg experiment-nextjs-performance experiment-database-migrations experiment-mysql2postgres experiment-test-with-postgres experiment-docker-development experiments experiments-no-scfg view-trace serve-traces
+.PHONY: lint test test-experiment-config analyze-trace plot-goal-coverage plot-goal-phases compile-skill compile-skill-with-preload-planner compile-skill-bootstrap compile-skill-bootstrap-with-preload-planner build-workflows smoke-containerd smoke-bwrap run-experiment-config show-experiment-config experiment experiment-concurrent experiment-codex experiment-codex-fuse experiment-codex-fuse-preload experiment-pi experiment-pi-concurrent experiment-pi-concurrent-planner experiment-pi-fuse-concurrent-planner experiment-no-scfg experiment-nextjs-performance experiment-database-migrations experiment-mysql2postgres experiment-test-with-postgres experiment-docker-development experiments experiments-no-scfg view-trace serve-traces
 
 lint:
 	fourmolu --config ./fourmolu.yaml -i lib/ test/ test-suite/agent-runner/ compiler/ compiler-bootstrap/ smoke/ test-fuse/
 
 test:
 	cabal test
+	python3 -m unittest test-suite/skill-experiments/test_experiment_config.py
+
+test-experiment-config:
+	python3 -m unittest test-suite/skill-experiments/test_experiment_config.py
 
 analyze-trace:
 	test -n "$(TRACE)"
@@ -54,6 +58,14 @@ smoke-containerd:
 
 smoke-bwrap:
 	cabal run exe:SeaOfGoals-bwrap-smoke
+
+run-experiment-config:
+	test -n "$(CONFIG)"
+	python3 test-suite/skill-experiments/experiment-config.py "$(CONFIG)"
+
+show-experiment-config:
+	test -n "$(CONFIG)"
+	python3 test-suite/skill-experiments/experiment-config.py --show "$(CONFIG)"
 
 experiment:
 	test -n "$(SKILL_EXPERIMENT)"
