@@ -123,6 +123,11 @@ import Agent.SeaOfGoals.Workspace.Backend
   )
 import Agent.SeaOfGoals.Workspace.Bwrap.Command qualified as Bwrap
 import Agent.SeaOfGoals.Workspace.Bwrap.Profile qualified as BwrapProfile
+import Agent.SeaOfGoals.Workspace.ConflictPolicy
+  ( AccessSets (..)
+  , ConflictMode (..)
+  , conflictingPaths
+  )
 import Agent.SeaOfGoals.Workspace.Containerd.Command qualified as Containerd
 import Agent.SeaOfGoals.Workspace.Effects
   ( EffectScope (..)
@@ -224,6 +229,7 @@ main = do
   configFileTest
   compilerGraphValidationTest
   compilerPreloadPlannerPromptTest
+  workspaceConflictPolicyTest
   goalContextPreloadTest
   goalGraphReductionTest
   codexProcessCommandTest
@@ -289,6 +295,38 @@ main = do
   harnessParallelToolCallsTest
   harnessRequiredGoalTest
   harnessWithoutGoalTest
+
+workspaceConflictPolicyTest :: IO ()
+workspaceConflictPolicyTest = do
+  let
+    current =
+      AccessSets
+        { accessReads = Set.fromList ["config.json", "input.txt"]
+        , accessWrites = Set.fromList ["dist", "output.txt"]
+        , accessRegularFileWrites = Set.singleton "output.txt"
+        }
+    accepted =
+      AccessSets
+        { accessReads = Set.fromList ["output.txt", "dist"]
+        , accessWrites = Set.fromList ["dist", "config.json"]
+        , accessRegularFileWrites = Set.singleton "config.json"
+        }
+  assertEqual
+    "strict conflicts include directory and file access conflicts"
+    (Set.fromList ["config.json", "dist", "output.txt"])
+    (conflictingPaths StrictAccessConflicts current accepted)
+  assertEqual
+    "file-writes-only ignores directory writes but retains file read/write conflicts"
+    (Set.fromList ["config.json", "output.txt"])
+    (conflictingPaths FileWriteConflictsOnly current accepted)
+  assertEqual
+    "file-writes-only detects regular-file write/write conflicts"
+    (Set.singleton "same.txt")
+    ( conflictingPaths
+        FileWriteConflictsOnly
+        (AccessSets Set.empty (Set.singleton "same.txt") (Set.singleton "same.txt"))
+        (AccessSets Set.empty (Set.singleton "same.txt") (Set.singleton "same.txt"))
+    )
 
 unicodeTransportResponseBodyTest :: IO ()
 unicodeTransportResponseBodyTest = do

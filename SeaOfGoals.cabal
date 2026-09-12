@@ -65,6 +65,7 @@ library
         Agent.SeaOfGoals.Workspace.Bwrap.ToolBinding
         Agent.SeaOfGoals.Workspace.Containerd.Command
         Agent.SeaOfGoals.Workspace.Backend
+        Agent.SeaOfGoals.Workspace.ConflictPolicy
         Agent.SeaOfGoals.Workspace.Effects
         Agent.SeaOfGoals.Workspace.Fuse.Merge
         Agent.SeaOfGoals.Workspace.Fuse.Store

@@ -39,6 +39,30 @@ The fixture now pre-creates `.workload`, matching its intended independent
 layout: build writes `.workload/build` and `dist`, while test writes
 `.workload/test` and `.test-output`.
 
+## Conflict Policy Modes
+
+Strict access conflicts remain the default. They compare all observed paths and
+reject write/write, write/read, and read/write overlap. Directory creation and
+removal remain significant in this mode because directory existence, metadata,
+and listings can change a task's behavior; directory conflicts are not assumed
+to be false positives globally.
+
+An explicitly experimental lenient mode is available for workloads where
+shared output parents are known to be benign:
+
+```sh
+SOG_CONFLICT_MODE=file-writes-only make experiment-pi-fuse-concurrent-planner \
+  SKILL_EXPERIMENT=mcp-release-prep-qsv-real
+```
+
+This mode filters the write side to paths that are regular files in either the
+task snapshot or the accepted base. It still rejects regular-file write/write,
+regular-file write/read, and read/regular-file write overlap. Pure directory
+writes no longer conflict with each other. The full FUSE write set is retained
+for applying the accepted snapshot and for tracing; the filter affects only the
+conflict decision. Use `SOG_CONFLICT_MODE=strict` or omit the variable for the
+conservative behavior.
+
 Run `643203f6-ff5f-4d00-b78b-e3211133891a--20260912T124821Z--mcp-release-prep--concurrent-sog--fuse--preload-context`
 completed all nine goals with no merge conflict. Its trace wall time was 208.3
 seconds. The same-model direct single-Pi baseline run

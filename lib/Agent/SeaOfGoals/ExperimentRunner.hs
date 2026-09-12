@@ -122,6 +122,12 @@ import Agent.SeaOfGoals.Workspace.Bwrap.ToolBinding
   ( BwrapToolBinding (..)
   , bwrapShellTool
   )
+import Agent.SeaOfGoals.Workspace.ConflictPolicy
+  ( AccessSets (..)
+  , ConflictMode
+  , conflictingPaths
+  , loadConflictModeFromEnv
+  )
 #ifdef SOG_FUSE
 import Agent.SeaOfGoals.Workspace.Backend qualified as WorkspaceBackend
 import Agent.SeaOfGoals.Workspace.Fuse.Mount
@@ -238,6 +244,7 @@ data ExperimentContext = ExperimentContext
   , experimentHarnessHistoryHandoff :: Bool
   , experimentPiHistoryHandoff :: Bool
   , experimentConcurrentWorkspaceMode :: ConcurrentWorkspaceMode
+  , experimentConflictMode :: ConflictMode
   , experimentGoalContextPreloadConfig :: GoalContextPreloadConfig
   , experimentGoalContextPreloadPlan :: GoalContextPreloadPlan
   , experimentDynamicGoalContextPreloadPlan :: IORef GoalContextPreloadPlan
@@ -261,6 +268,7 @@ data AcceptedEffects = AcceptedEffects
   , acceptedEffectsGeneration :: Int
   , acceptedEffectsReads :: Set FilePath
   , acceptedEffectsWrites :: Set FilePath
+  , acceptedEffectsRegularFileWrites :: Set FilePath
   }
   deriving stock (Eq, Show)
 
@@ -330,6 +338,7 @@ loadExperimentContext apiKey prompt = do
   harnessHistoryHandoff <- loadHarnessHistoryHandoff
   piHistoryHandoff <- loadPiHistoryHandoff
   concurrentWorkspaceMode <- loadConcurrentWorkspaceMode
+  conflictMode <- loadConflictModeFromEnv
   goalContextPreloadConfig <- loadGoalContextPreloadConfigFromEnv
   goalContextPreloadPlan <- loadGoalContextPreloadPlanFromEnv
   predictedActionsPlan <- loadPredictedActionsPlanFromEnv
@@ -410,6 +419,7 @@ loadExperimentContext apiKey prompt = do
       , experimentHarnessHistoryHandoff = harnessHistoryHandoff
       , experimentPiHistoryHandoff = piHistoryHandoff
       , experimentConcurrentWorkspaceMode = concurrentWorkspaceMode
+      , experimentConflictMode = conflictMode
       , experimentGoalContextPreloadConfig = goalContextPreloadConfig
       , experimentGoalContextPreloadPlan = goalContextPreloadPlan
       , experimentDynamicGoalContextPreloadPlan = dynamicGoalContextPreloadPlan
@@ -1833,6 +1843,7 @@ mergeConcurrentGoal
                 }
           )
       Nothing -> do
+        regularFileWrites <- regularFileWritePaths baseWorkspace result
         applyGoalWorkspace baseWorkspace result
         rememberSummary
           summaries
@@ -1845,7 +1856,7 @@ mergeConcurrentGoal
         generation <- nextAcceptedGeneration acceptedGenerationRef
         modifyIORef'
           acceptedEffectsRef
-          (acceptedEffectFromResult generation result :)
+          (acceptedEffectFromResult generation regularFileWrites result :)
         rememberMergeAccepted context result
         recordMergeGraphSnapshot context goalGraph "merge_accept" result Nothing
         pure (Right ())
@@ -1971,6 +1982,7 @@ firstConcurrentConflict context baseWorkspace acceptedEffectsRef runBaseGenerati
     FuseEventWorkspace -> do
       baseGenerations <- readIORef runBaseGenerationsRef
       acceptedEffects <- readIORef acceptedEffectsRef
+      regularFileWrites <- regularFileWritePaths baseWorkspace result
       let
         baseGeneration =
           Map.findWithDefault 0 (agentRunResultGoal result) baseGenerations
@@ -1978,36 +1990,70 @@ firstConcurrentConflict context baseWorkspace acceptedEffectsRef runBaseGenerati
           filter
             ((> baseGeneration) . acceptedEffectsGeneration)
             acceptedEffects
-      pure (firstAccessSetConflict concurrentEffects result)
+      pure
+        ( firstAccessSetConflict
+            (experimentConflictMode context)
+            concurrentEffects
+            regularFileWrites
+            result
+        )
 
 firstAccessSetConflict
-  :: [AcceptedEffects] -> AgentRunResult -> Maybe (FilePath, GoalNodeId)
-firstAccessSetConflict accepted result =
+  :: ConflictMode
+  -> [AcceptedEffects]
+  -> Set FilePath
+  -> AgentRunResult
+  -> Maybe (FilePath, GoalNodeId)
+firstAccessSetConflict mode accepted regularFileWrites result =
   firstOr
     [ (path, acceptedEffectsGoal effects)
     | effects <- accepted
     , path <-
         Set.toList
-          ( Set.unions
-              [ Set.intersection currentWrites (acceptedEffectsWrites effects)
-              , Set.intersection currentWrites (acceptedEffectsReads effects)
-              , Set.intersection currentReads (acceptedEffectsWrites effects)
-              ]
+          ( conflictingPaths
+              mode
+              currentAccesses
+              (acceptedAccesses effects)
           )
     ]
     Nothing
  where
-  currentReads = agentRunResultReads result
-  currentWrites = agentRunResultWrites result
+  currentAccesses =
+    AccessSets
+      { accessReads = agentRunResultReads result
+      , accessWrites = agentRunResultWrites result
+      , accessRegularFileWrites = regularFileWrites
+      }
+  acceptedAccesses effects =
+    AccessSets
+      { accessReads = acceptedEffectsReads effects
+      , accessWrites = acceptedEffectsWrites effects
+      , accessRegularFileWrites = acceptedEffectsRegularFileWrites effects
+      }
 
-acceptedEffectFromResult :: Int -> AgentRunResult -> AcceptedEffects
-acceptedEffectFromResult generation result =
+acceptedEffectFromResult
+  :: Int -> Set FilePath -> AgentRunResult -> AcceptedEffects
+acceptedEffectFromResult generation regularFileWrites result =
   AcceptedEffects
     { acceptedEffectsGoal = agentRunResultGoal result
     , acceptedEffectsGeneration = generation
     , acceptedEffectsReads = agentRunResultReads result
     , acceptedEffectsWrites = agentRunResultWrites result
+    , acceptedEffectsRegularFileWrites = regularFileWrites
     }
+
+regularFileWritePaths :: FilePath -> AgentRunResult -> IO (Set FilePath)
+regularFileWritePaths baseWorkspace result =
+  Set.fromList
+    <$> filterM
+      isRegularFileWrite
+      (Set.toList (agentRunResultWrites result))
+ where
+  taskWorkspace = snapshotWorkspacePath (agentRunResultSnapshot result)
+  isRegularFileWrite relativePath =
+    (||)
+      <$> doesFileExist (taskWorkspace </> relativePath)
+      <*> doesFileExist (baseWorkspace </> relativePath)
 
 nextAcceptedGeneration :: IORef Int -> IO Int
 nextAcceptedGeneration generationRef = do
