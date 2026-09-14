@@ -1796,6 +1796,7 @@ runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecesso
         , FuseStore.specAgentMountPath = "/workspace"
         }
   let mountValue = WorkspaceBackend.mount backend handle
+  accessCursor <- newIORef 0
   (piResult, preloadedReads) <-
     bracket
       (mountFuseWorkspace handle mountValue)
@@ -1813,6 +1814,7 @@ runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecesso
               ( \event -> do
                   experimentEventSink context event
                   recordPiPlanPublication context controlRoot event
+                  recordPiFuseEffects context taskId accessCursor handle event
               )
               (Just taskId)
               (WorkspaceBackend.mountHostPath mountValue)
@@ -1823,6 +1825,7 @@ runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecesso
               )
           pure (result, preloadedGoalContextReads preloaded)
       )
+  flushPiFuseEffects context taskId accessCursor handle
   accessLog <- filterWorkspaceAccesses <$> FuseStore.accessLog handle
   let
     status = piGoalStatus piResult
@@ -1872,6 +1875,55 @@ filterWorkspaceAccesses =
     case splitDirectories (normalise path) of
       ".sog" : _ -> True
       _ -> False
+
+-- | Pi emits 'ToolResultObserved' only after the corresponding tool execution
+-- has completed. Drain the FUSE log at that boundary so traces retain the
+-- exact effect round that a speculative scheduler must inspect.
+recordPiFuseEffects
+  :: ExperimentContext
+  -> Text
+  -> IORef Int
+  -> FuseStore.Handle
+  -> HarnessEvent
+  -> IO ()
+recordPiFuseEffects context taskId cursor handle event =
+  case event of
+    ToolResultObserved{} -> flushPiFuseEffects context taskId cursor handle
+    _ -> pure ()
+
+flushPiFuseEffects
+  :: ExperimentContext
+  -> Text
+  -> IORef Int
+  -> FuseStore.Handle
+  -> IO ()
+flushPiFuseEffects context taskId cursor handle = do
+  previousCursor <- readIORef cursor
+  (nextCursor, accesses) <- FuseStore.accessLogSince previousCursor handle
+  writeIORef cursor nextCursor
+  forM_ (filterWorkspaceAccesses accesses) $ \access ->
+    experimentEventSink context $
+      EffectRecorded
+        (fuseAccessEffect access)
+        (Just taskId)
+
+fuseAccessEffect :: FuseStore.Access -> EffectRecord
+fuseAccessEffect access =
+  case access of
+    FuseStore.ContentRead path -> effect "workspace_content_read" path Nothing
+    FuseStore.MetadataRead path -> effect "workspace_metadata_read" path Nothing
+    FuseStore.DirectoryRead path -> effect "workspace_directory_read" path Nothing
+    FuseStore.FileCreated path -> effect "workspace_file_created" path Nothing
+    FuseStore.FileModified path -> effect "workspace_file_modified" path Nothing
+    FuseStore.FileDeleted path -> effect "workspace_file_deleted" path Nothing
+    FuseStore.FileRenamed fromPath toPath -> effect "workspace_file_renamed" fromPath (Just (Text.pack toPath))
+ where
+  effect kind path detail =
+    EffectRecord
+      { effectKind = kind
+      , effectResource = Text.pack path
+      , effectDetail = detail
+      }
 #endif
 
 mergeConcurrentGoal
