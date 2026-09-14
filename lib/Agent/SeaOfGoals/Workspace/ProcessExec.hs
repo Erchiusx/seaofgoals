@@ -21,6 +21,7 @@ import Control.Concurrent.MVar
 import Control.Exception
   ( IOException
   , SomeException
+  , onException
   , try
   )
 import Data.ByteString (ByteString)
@@ -87,32 +88,36 @@ runProcessExec spec =
     (Just stdinHandle, Just stdoutHandle, Just stderrHandle, processHandle) <-
       createProcess
         process{std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe}
-    writeProcessInput stdinHandle (processExecStdin spec)
-    _ <-
-      forkIO $ do
-        stdoutBytes <- ByteString.hGetContents stdoutHandle
-        stderrBytes <- ByteString.hGetContents stderrHandle
-        result <-
-          try (waitForProcess processHandle) :: IO (Either SomeException ExitCode)
-        putMVar done (result, stdoutBytes, stderrBytes)
-    _ <-
-      forkIO $ do
-        threadDelay (fromIntegral seconds * 1000000)
-        writeIORef timedOutRef True
-        terminateProcess processHandle
-    (result, stdoutBytes, stderrBytes) <- takeMVar done
-    timedOut <- readIORef timedOutRef
-    case result of
-      Right exitCode ->
-        pure (toOutcome timedOut exitCode stdoutBytes stderrBytes)
-      Left err ->
-        pure
-          SandboxExecOutcome
-            { sandboxExecExitCode = 124
-            , sandboxExecStdout = stdoutBytes
-            , sandboxExecStderr = TextEncoding.encodeUtf8 (Text.pack (show err))
-            , sandboxExecTimedOut = True
-            }
+    onException
+      (do
+        writeProcessInput stdinHandle (processExecStdin spec)
+        _ <-
+          forkIO $ do
+            stdoutBytes <- ByteString.hGetContents stdoutHandle
+            stderrBytes <- ByteString.hGetContents stderrHandle
+            result <-
+              try (waitForProcess processHandle) :: IO (Either SomeException ExitCode)
+            putMVar done (result, stdoutBytes, stderrBytes)
+        _ <-
+          forkIO $ do
+            threadDelay (fromIntegral seconds * 1000000)
+            writeIORef timedOutRef True
+            terminateProcess processHandle
+        (result, stdoutBytes, stderrBytes) <- takeMVar done
+        timedOut <- readIORef timedOutRef
+        case result of
+          Right exitCode ->
+            pure (toOutcome timedOut exitCode stdoutBytes stderrBytes)
+          Left err ->
+            pure
+              SandboxExecOutcome
+                { sandboxExecExitCode = 124
+                , sandboxExecStdout = stdoutBytes
+                , sandboxExecStderr = TextEncoding.encodeUtf8 (Text.pack (show err))
+                , sandboxExecTimedOut = True
+                }
+      )
+      (terminateProcess processHandle)
 
   runProcess command args = do
     (Just stdinHandle, Just stdoutHandle, Just stderrHandle, processHandle) <-
@@ -122,11 +127,15 @@ runProcessExec spec =
           , std_out = CreatePipe
           , std_err = CreatePipe
           }
-    writeProcessInput stdinHandle (processExecStdin spec)
-    stdoutBytes <- ByteString.hGetContents stdoutHandle
-    stderrBytes <- ByteString.hGetContents stderrHandle
-    exitCode <- waitForProcess processHandle
-    pure (exitCode, stdoutBytes, stderrBytes)
+    onException
+      (do
+        writeProcessInput stdinHandle (processExecStdin spec)
+        stdoutBytes <- ByteString.hGetContents stdoutHandle
+        stderrBytes <- ByteString.hGetContents stderrHandle
+        exitCode <- waitForProcess processHandle
+        pure (exitCode, stdoutBytes, stderrBytes)
+      )
+      (terminateProcess processHandle)
 
   mkProcess command args =
     (proc command args)
@@ -163,39 +172,43 @@ runProcessExecWithStdoutLineSink spec stdoutLineSink =
     (Just stdinHandle, Just stdoutHandle, Just stderrHandle, processHandle) <-
       createProcess
         process{std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe}
-    writeProcessInput stdinHandle (processExecStdin spec)
-    stdoutRef <- newIORef []
-    stderrDone <- newEmptyMVar
-    _ <-
-      forkIO $ do
-        stderrBytes <- ByteString.hGetContents stderrHandle
-        putMVar stderrDone stderrBytes
-    _ <-
-      forkIO $ do
-        streamStdout stdoutHandle stdoutRef stdoutLineSink
-        result <-
-          try (waitForProcess processHandle) :: IO (Either SomeException ExitCode)
-        stderrBytes <- takeMVar stderrDone
-        stdoutChunks <- readIORef stdoutRef
-        putMVar done (result, ByteString.concat (reverse stdoutChunks), stderrBytes)
-    _ <-
-      forkIO $ do
-        threadDelay (fromIntegral seconds * 1000000)
-        writeIORef timedOutRef True
-        terminateProcess processHandle
-    (result, stdoutBytes, stderrBytes) <- takeMVar done
-    timedOut <- readIORef timedOutRef
-    case result of
-      Right exitCode ->
-        pure (toOutcome timedOut exitCode stdoutBytes stderrBytes)
-      Left err ->
-        pure
-          SandboxExecOutcome
-            { sandboxExecExitCode = 124
-            , sandboxExecStdout = stdoutBytes
-            , sandboxExecStderr = TextEncoding.encodeUtf8 (Text.pack (show err))
-            , sandboxExecTimedOut = True
-            }
+    onException
+      (do
+        writeProcessInput stdinHandle (processExecStdin spec)
+        stdoutRef <- newIORef []
+        stderrDone <- newEmptyMVar
+        _ <-
+          forkIO $ do
+            stderrBytes <- ByteString.hGetContents stderrHandle
+            putMVar stderrDone stderrBytes
+        _ <-
+          forkIO $ do
+            streamStdout stdoutHandle stdoutRef stdoutLineSink
+            result <-
+              try (waitForProcess processHandle) :: IO (Either SomeException ExitCode)
+            stderrBytes <- takeMVar stderrDone
+            stdoutChunks <- readIORef stdoutRef
+            putMVar done (result, ByteString.concat (reverse stdoutChunks), stderrBytes)
+        _ <-
+          forkIO $ do
+            threadDelay (fromIntegral seconds * 1000000)
+            writeIORef timedOutRef True
+            terminateProcess processHandle
+        (result, stdoutBytes, stderrBytes) <- takeMVar done
+        timedOut <- readIORef timedOutRef
+        case result of
+          Right exitCode ->
+            pure (toOutcome timedOut exitCode stdoutBytes stderrBytes)
+          Left err ->
+            pure
+              SandboxExecOutcome
+                { sandboxExecExitCode = 124
+                , sandboxExecStdout = stdoutBytes
+                , sandboxExecStderr = TextEncoding.encodeUtf8 (Text.pack (show err))
+                , sandboxExecTimedOut = True
+                }
+      )
+      (terminateProcess processHandle)
 
   runStreamingProcess command args sink = do
     (Just stdinHandle, Just stdoutHandle, Just stderrHandle, processHandle) <-
@@ -205,18 +218,22 @@ runProcessExecWithStdoutLineSink spec stdoutLineSink =
           , std_out = CreatePipe
           , std_err = CreatePipe
           }
-    writeProcessInput stdinHandle (processExecStdin spec)
-    stdoutRef <- newIORef []
-    stderrDone <- newEmptyMVar
-    _ <-
-      forkIO $ do
-        stderrBytes <- ByteString.hGetContents stderrHandle
-        putMVar stderrDone stderrBytes
-    streamStdout stdoutHandle stdoutRef sink
-    exitCode <- waitForProcess processHandle
-    stderrBytes <- takeMVar stderrDone
-    stdoutChunks <- readIORef stdoutRef
-    pure (exitCode, ByteString.concat (reverse stdoutChunks), stderrBytes)
+    onException
+      (do
+        writeProcessInput stdinHandle (processExecStdin spec)
+        stdoutRef <- newIORef []
+        stderrDone <- newEmptyMVar
+        _ <-
+          forkIO $ do
+            stderrBytes <- ByteString.hGetContents stderrHandle
+            putMVar stderrDone stderrBytes
+        streamStdout stdoutHandle stdoutRef sink
+        exitCode <- waitForProcess processHandle
+        stderrBytes <- takeMVar stderrDone
+        stdoutChunks <- readIORef stdoutRef
+        pure (exitCode, ByteString.concat (reverse stdoutChunks), stderrBytes)
+      )
+      (terminateProcess processHandle)
 
   streamStdout stdoutHandle stdoutRef sink = do
     eof <- hIsEOF stdoutHandle
