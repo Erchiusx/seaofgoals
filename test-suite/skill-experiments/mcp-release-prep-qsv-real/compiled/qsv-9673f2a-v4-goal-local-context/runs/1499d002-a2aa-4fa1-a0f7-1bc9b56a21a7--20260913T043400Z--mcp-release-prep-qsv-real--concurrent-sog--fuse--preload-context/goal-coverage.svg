@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="396" viewBox="0 0 1100 396">
+<style>text{font:13px sans-serif;fill:#202124}.axis{stroke:#9aa0a6}.grid{stroke:#e5e7eb}.bar{fill:#4f86c6}.label{font-weight:600}</style>
+<text x="120" y="22" font-size="16" class="label">Goal coverage</text>
+<text x="1076" y="22" text-anchor="end">wall time: 528.0s</text>
+<line x1="120" y1="60" x2="1076" y2="60" class="grid"/>
+<text x="108" y="65" text-anchor="end" class="label">G000</text>
+<rect x="120.00" y="48" width="263.28" height="24" rx="3" class="bar"/>
+<title>G000: 145.4s</title>
+<text x="391.28" y="65">145.4s</text>
+<line x1="120" y1="94" x2="1076" y2="94" class="grid"/>
+<text x="108" y="99" text-anchor="end" class="label">G001</text>
+<rect x="181.99" y="82" width="145.81" height="24" rx="3" class="bar"/>
+<title>G001: 80.5s</title>
+<text x="335.80" y="99">80.5s</text>
+<line x1="120" y1="128" x2="1076" y2="128" class="grid"/>
+<text x="108" y="133" text-anchor="end" class="label">G002</text>
+<rect x="329.89" y="116" width="26.15" height="24" rx="3" class="bar"/>
+<title>G002: 14.4s</title>
+<text x="364.04" y="133">14.4s</text>
+<line x1="120" y1="162" x2="1076" y2="162" class="grid"/>
+<text x="108" y="167" text-anchor="end" class="label">G003</text>
+<rect x="329.88" y="150" width="120.99" height="24" rx="3" class="bar"/>
+<title>G003: 66.8s</title>
+<text x="458.87" y="167">66.8s</text>
+<line x1="120" y1="196" x2="1076" y2="196" class="grid"/>
+<text x="108" y="201" text-anchor="end" class="label">G004</text>
+<rect x="329.90" y="184" width="84.40" height="24" rx="3" class="bar"/>
+<title>G004: 46.6s</title>
+<text x="422.29" y="201">46.6s</text>
+<line x1="120" y1="230" x2="1076" y2="230" class="grid"/>
+<text x="108" y="235" text-anchor="end" class="label">G005</text>
+<rect x="452.32" y="218" width="302.56" height="24" rx="3" class="bar"/>
+<title>G005: 167.1s</title>
+<text x="762.88" y="235">167.1s</text>
+<line x1="120" y1="264" x2="1076" y2="264" class="grid"/>
+<text x="108" y="269" text-anchor="end" class="label">G006</text>
+<rect x="452.32" y="252" width="342.34" height="24" rx="3" class="bar"/>
+<title>G006: 189.1s</title>
+<text x="802.66" y="269">189.1s</text>
+<line x1="120" y1="298" x2="1076" y2="298" class="grid"/>
+<text x="108" y="303" text-anchor="end" class="label">G007</text>
+<rect x="797.48" y="286" width="193.45" height="24" rx="3" class="bar"/>
+<title>G007: 106.9s</title>
+<text x="998.94" y="303">106.9s</text>
+<line x1="120" y1="332" x2="1076" y2="332" class="grid"/>
+<text x="108" y="337" text-anchor="end" class="label">G008</text>
+<rect x="996.64" y="320" width="79.36" height="24" rx="3" class="bar"/>
+<title>G008: 43.8s</title>
+<text x="1076.00" y="337">43.8s</text>
+<line x1="120" y1="40" x2="120" y2="366" class="axis"/>
+<line x1="120" y1="366" x2="1076" y2="366" class="axis"/>
+<text x="120" y="386">0s</text>
+<text x="1076" y="386" text-anchor="end">528.0s</text>
+</svg>
