@@ -23,6 +23,13 @@ class ExperimentConfigTest(unittest.TestCase):
         self.assertEqual("file-writes-only", concurrent["conflict_mode"])
         self.assertEqual("fuse", concurrent["workspace_backend"])
         self.assertTrue(concurrent["fuse_support"])
+        self.assertEqual(
+            [".claude/skills/mcp-release-prep", ".claude/skills/release-prep"],
+            concurrent["masked_paths"],
+        )
+        self.assertIn("G000", concurrent["masked_path_goals"])
+        self.assertIn("G005", concurrent["masked_path_goals"])
+        self.assertNotIn("G007", concurrent["masked_path_goals"])
         self.assertFalse(baseline["workflow_enabled"])
         self.assertEqual("serial", baseline["scheduler"])
         self.assertTrue(baseline["fuse_support"])
@@ -38,6 +45,8 @@ class ExperimentConfigTest(unittest.TestCase):
             "workspace_backend": "fuse",
             "sandbox": "bwrap",
             "conflict_mode": "strict",
+            "masked_paths": ["internal/instructions"],
+            "masked_path_goals": ["G000", "G001"],
             "incremental": True,
             "preload": True,
             "pi_handoff": False,
@@ -59,6 +68,11 @@ class ExperimentConfigTest(unittest.TestCase):
         self.assertNotIn("SOG_PROMPT_CACHE_KEY", environment)
         self.assertEqual("yes", environment["KEEP_ME"])
         self.assertEqual("-f fuse", values["SOG_CABAL_FLAGS"])
+        self.assertEqual(
+            "internal/instructions",
+            values["SOG_BWRAP_MASK_WORKSPACE_PATHS"],
+        )
+        self.assertEqual("G000,G001", values["SOG_BWRAP_MASK_GOALS"])
 
 
 if __name__ == "__main__":

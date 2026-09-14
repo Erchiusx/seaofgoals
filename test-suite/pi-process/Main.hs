@@ -7,6 +7,10 @@ import Agent.SeaOfGoals.PiProcess
   , runPiProcess
   )
 import Agent.SeaOfGoals.Trace (HarnessEvent (..))
+import Agent.SeaOfGoals.Workspace.Bwrap.Command (Mount (..))
+import Agent.SeaOfGoals.Workspace.Bwrap.Visibility
+  ( maskedWorkspaceMountsFromEnv
+  )
 import Agent.SeaOfGoals.Workspace.Sandbox (ExecTimeout (ExecNoTimeout))
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Text qualified as Text
@@ -16,6 +20,7 @@ import System.Directory
   , removePathForcibly
   )
 import System.FilePath ((</>))
+import System.Environment (setEnv, unsetEnv)
 import System.Posix.Files (setFileMode)
 
 main :: IO ()
@@ -48,6 +53,7 @@ main = do
         , piProcessSdkRunner = Nothing
         , piProcessModel = Nothing
         , piProcessTimeout = ExecNoTimeout
+        , piProcessBwrapBinary = Nothing
         }
       (\event -> modifyIORef' events (event :))
       (Just "G-test")
@@ -63,6 +69,23 @@ main = do
   assertTrue "tool result event" (any isToolResult recorded)
   assertTrue "usage event" (any isUsage recorded)
   assertTrue "process finished" (any isProcessFinished recorded)
+  setEnv
+    "SOG_BWRAP_MASK_WORKSPACE_PATHS"
+    ".claude/skills/internal-a:.claude/skills/internal-b"
+  setEnv "SOG_BWRAP_MASK_GOALS" "G000,G001"
+  masked <- maskedWorkspaceMountsFromEnv root (Just "G001")
+  visible <- maskedWorkspaceMountsFromEnv root (Just "G007")
+  unsetEnv "SOG_BWRAP_MASK_WORKSPACE_PATHS"
+  unsetEnv "SOG_BWRAP_MASK_GOALS"
+  assertEqual "masked mount count" 2 (length masked)
+  case masked of
+    firstMount : _ ->
+      assertEqual
+        "first masked path"
+        "/workspace/.claude/skills/internal-a"
+        (mountSandboxPath firstMount)
+    [] -> fail "missing masked mounts"
+  assertEqual "unmasked goal mount count" 0 (length visible)
   putStrLn "Pi process smoke test passed."
 
 isProcessStarted :: HarnessEvent -> Bool

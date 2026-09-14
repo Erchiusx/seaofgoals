@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 
 const piRoot = process.env.SOG_PI_ROOT || "/home/erchius/development/pi";
-const { createAgentSession, ModelRuntime, SessionManager } = await import(
+const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager } = await import(
   `${piRoot}/packages/coding-agent/dist/index.js`,
 );
 
@@ -47,6 +47,31 @@ const setPredictedActionsPlanTool = planTool(
   "Publish conservative read-only predicted actions to the SeaOfGoals harness.",
   "SOG_PREDICTED_ACTIONS_PLAN:",
 );
+
+const setGoalResolutionTool = {
+  name: "set_goal_resolution",
+  label: "set_goal_resolution",
+  description:
+    "Resolve a later goal without launching another agent, either because this read-only planner completed its information-gathering work or because current workspace evidence proves no action is needed.",
+  promptSnippet:
+    "Use completed_by_planner only for work completed read-only by this planner. Use no_action only when workspace evidence proves the goal requires no changes. Provide concise context needed by successors.",
+  parameters: {
+    type: "object",
+    properties: {
+      goal_id: { type: "string" },
+      kind: { type: "string", enum: ["completed_by_planner", "no_action"] },
+      context: { type: "string" },
+    },
+    required: ["goal_id", "kind", "context"],
+    additionalProperties: false,
+  },
+  async execute(_toolCallId, params) {
+    return {
+      content: [{ type: "text", text: `SOG_GOAL_RESOLUTION:${JSON.stringify(params)}` }],
+      details: params,
+    };
+  },
+};
 
 function makeEntries(cwd, messages = []) {
   const header = {
@@ -101,14 +126,28 @@ async function run(request) {
   const model = modelRuntime.getModel(provider, modelId);
   if (!model) throw new Error(`Pi model is not available: ${provider}/${modelId}`);
   const sessionManager = SessionManager.inMemory(cwd, undefined, makeEntries(cwd, request.messages));
-  const plannerTools = request.goalId === "G000" ? [setPreloadPlanTool, setPredictedActionsPlanTool] : [];
+  const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, noSkills: true });
+  await resourceLoader.reload();
+  const plannerTools =
+    request.goalId === "G000"
+      ? [setPreloadPlanTool, setPredictedActionsPlanTool, setGoalResolutionTool]
+      : [];
   const { session } = await createAgentSession({
     cwd,
     agentDir,
     model,
     modelRuntime,
+    resourceLoader,
     sessionManager,
-    tools: ["read", "bash", "edit", "write", "set_preload_plan", "set_predicted_actions_plan"],
+    tools: [
+      "read",
+      "bash",
+      "edit",
+      "write",
+      "set_preload_plan",
+      "set_predicted_actions_plan",
+      "set_goal_resolution",
+    ],
     customTools: plannerTools,
   });
   const unsubscribe = session.subscribe((event) => {
@@ -116,6 +155,13 @@ async function run(request) {
   });
   try {
     await session.prompt(request.prompt || "");
+    const lastMessage = session.state.messages.at(-1);
+    if (
+      lastMessage?.role === "assistant" &&
+      (lastMessage.stopReason === "error" || lastMessage.stopReason === "aborted")
+    ) {
+      throw new Error(lastMessage.errorMessage || `Pi request ${lastMessage.stopReason}`);
+    }
   } finally {
     unsubscribe();
     session.dispose();

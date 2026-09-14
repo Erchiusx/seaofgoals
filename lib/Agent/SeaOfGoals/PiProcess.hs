@@ -31,6 +31,9 @@ import Agent.SeaOfGoals.Trace
       )
   )
 import Agent.SeaOfGoals.Workspace.Bwrap.Command qualified as BwrapCommand
+import Agent.SeaOfGoals.Workspace.Bwrap.Visibility
+  ( maskedWorkspaceMountsFromEnv
+  )
 import Agent.SeaOfGoals.Workspace.ProcessExec
   ( ProcessExecSpec (..)
   , runProcessExecWithStdoutLineSink
@@ -233,6 +236,7 @@ runPiSdkProcess config eventSink goalId workspace controlRoot prompt history = d
     case piProcessSdkRunner config of
       Nothing -> pure (sdkFailure "Pi SDK runner is not configured")
       Just runner -> do
+        maskedMounts <- maskedWorkspaceMountsFromEnv controlRoot goalId
         eventSink
           ( ProcessStarted
               "pi-sdk"
@@ -243,7 +247,7 @@ runPiSdkProcess config eventSink goalId workspace controlRoot prompt history = d
         outcome <-
           runProcessExecWithStdoutLineSink
             ProcessExecSpec
-              { processExecArgv = sdkCommand config runner workspace
+              { processExecArgv = sdkCommand runner workspace maskedMounts
               , processExecCwd = Nothing
               , processExecEnv = Nothing
               , processExecTimeout = piProcessTimeout config
@@ -269,7 +273,7 @@ runPiSdkProcess config eventSink goalId workspace controlRoot prompt history = d
           )
         pure result
 
-  sdkCommand config runner workspace =
+  sdkCommand runner workspacePath maskedMounts =
     case piProcessBwrapBinary config of
       Nothing ->
         [ "sh"
@@ -282,7 +286,7 @@ runPiSdkProcess config eventSink goalId workspace controlRoot prompt history = d
           BwrapCommand.ExecutionView
             { BwrapCommand.viewHostRoot = BwrapCommand.ReadOnlyHostRoot
             , BwrapCommand.viewMounts =
-                [ BwrapCommand.Mount workspace "/workspace" BindReadWrite
+                [ BwrapCommand.Mount workspacePath "/workspace" BindReadWrite
                 , BwrapCommand.Mount "/tmp" "/tmp" BindReadWrite
                 , BwrapCommand.Mount
                     (controlRoot </> "pi-agent")
@@ -301,6 +305,7 @@ runPiSdkProcess config eventSink goalId workspace controlRoot prompt history = d
                     "/node-runtime"
                     BindReadOnly
                 ]
+                  <> maskedMounts
             , BwrapCommand.viewEnv =
                 [ ("SOG_PI_ROOT", "/pi-root")
                 , ("PATH", "/node-runtime/bin:/usr/local/bin:/usr/bin:/bin")

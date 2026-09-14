@@ -10,25 +10,36 @@ from collections import defaultdict
 from pathlib import Path
 
 
+PLANNER_CONTROL_TOOLS = {
+    "set_goal_resolution",
+    "set_predicted_actions_plan",
+    "set_preload_plan",
+}
+
+
 def timestamp(value):
     return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def command_writes(tool_name, arguments):
+def tool_phase(tool_name, arguments):
+    if tool_name in PLANNER_CONTROL_TOOLS:
+        return "control"
     if tool_name in {"write", "edit"}:
-        return True
+        return "write"
     if tool_name != "bash":
-        return False
+        return "read"
     command = str(arguments.get("command", ""))
-    return bool(
+    command_words = re.sub(r"'(?:[^']*)'|\"(?:\\.|[^\"])*\"", "", command)
+    writes = bool(
         re.search(
             r"\b(apply_patch|sed\s+-i|perl\s+-i|tee|mv|cp|rm|mkdir|touch|"
             r"heavy-compile\.mjs\s+(build|test)|package\.mjs|"
             r"npm(?:\s+--[A-Za-z0-9_-]+(?:[= ][^\s;&|]+)?)*\s+(run|test|install)|"
             r"git\s+(apply|checkout|reset))\b",
-            command,
+            command_words,
         )
     )
+    return "write" if writes else "read"
 
 
 def parse_trace(path):
@@ -40,10 +51,15 @@ def parse_trace(path):
     turn_number = 0
     merge_starts = {}
     merges = defaultdict(list)
+    resolutions = defaultdict(list)
 
     for record in records:
         now = timestamp(record["timestamp"])
         wrapper = record.get("event", {})
+        if wrapper.get("type") == "planner_goal_resolved":
+            resolutions[wrapper["goal_id"]].append(
+                (now, wrapper.get("resolution_kind", "resolved"), wrapper.get("context", ""))
+            )
         if wrapper.get("type") == "dag_snapshot":
             phase = wrapper.get("phase", "")
             reason = wrapper.get("reason", "")
@@ -76,7 +92,7 @@ def parse_trace(path):
             active[key]["tools"][raw.get("toolCallId", str(now))] = [
                 now,
                 now,
-                "write" if command_writes(tool_name, arguments) else "read",
+                tool_phase(tool_name, arguments),
                 tool_name,
                 arguments,
             ]
@@ -96,6 +112,7 @@ def parse_trace(path):
         "wall": (trace_end - trace_start).total_seconds(),
         "turns": turns,
         "merges": merges,
+        "resolutions": resolutions,
     }
 
 
@@ -110,7 +127,12 @@ def partition_turn(turn):
             continue
         covering = [tool for tool in turn["tools"].values() if tool[0] <= begin and end <= tool[1]]
         if covering:
-            phase = "write" if any(tool[2] == "write" for tool in covering) else "read"
+            phases = {tool[2] for tool in covering}
+            phase = next(
+                candidate
+                for candidate in ("write", "control", "read")
+                if candidate in phases
+            )
             names = ", ".join(sorted({tool[3] for tool in covering if tool[3]}))
         else:
             phase = "model"
@@ -130,7 +152,11 @@ def elapsed_rounds(trace, selected_turns):
             phase = "model"
             tool_names = "model response without tool calls"
         else:
-            phase = "write" if "write" in tool_phases else "read"
+            phase = next(
+                candidate
+                for candidate in ("write", "control", "read")
+                if candidate in tool_phases
+            )
             tool_names = ", ".join(sorted({tool[3] for tool in turn["tools"].values()}))
         segments.append(
             {
@@ -158,6 +184,16 @@ def concurrent_rounds(trace, goal):
             "turn": 0,
         }
         for begin, end, phase in trace["merges"].get(goal, [])
+    )
+    rounds.extend(
+        {
+            "phase": "resolved",
+            "start": (at - trace["start"]).total_seconds(),
+            "end": (at - trace["start"]).total_seconds(),
+            "detail": f"{kind}: {context}",
+            "turn": 0,
+        }
+        for at, kind, context in trace["resolutions"].get(goal, [])
     )
     return sorted(rounds, key=lambda segment: segment["start"])
 
@@ -227,7 +263,7 @@ def render(concurrent, baseline, config, output):
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(config["title"])}</title>
 <style>
-:root{{--bg:#fff;--line:#d9dee5;--text:#202428;--muted:#66707b;--read:#568bc8;--write:#dd8529;--model:#8b5cf6;--merge:#475569}}
+:root{{--bg:#fff;--line:#d9dee5;--text:#202428;--muted:#66707b;--read:#568bc8;--write:#dd8529;--control:#0f766e;--model:#8b5cf6;--merge:#475569;--resolved:#16a085}}
 *{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 system-ui,sans-serif;letter-spacing:0}}
 main{{width:min(1500px,calc(100% - 32px));margin:20px auto 48px}}header{{display:flex;justify-content:space-between;align-items:end;gap:24px;margin-bottom:14px}}
 h1{{font-size:21px;margin:0 0 3px}}p{{margin:0;color:var(--muted)}}.walls{{display:flex;gap:24px}}.walls strong{{display:block;font-size:19px}}
@@ -235,11 +271,11 @@ h1{{font-size:21px;margin:0 0 3px}}p{{margin:0;color:var(--muted)}}.walls{{displ
 .axis{{position:sticky;top:0;z-index:5;margin-left:260px;height:34px;background:#fffc;border-bottom:1px solid #9aa3ad;backdrop-filter:blur(5px)}}.axis span{{position:absolute;bottom:6px;transform:translateX(-50%);color:var(--muted);font-size:12px}}.axis span:first-child{{transform:none}}.axis span:last-child{{transform:translateX(-100%)}}
 .panel{{margin-top:18px}}.panel-head{{display:flex;align-items:baseline;justify-content:space-between;margin:0 0 7px 260px}}.panel-head h2{{font-size:16px;margin:0}}.panel-head span{{color:var(--muted)}}
 .row{{display:grid;grid-template-columns:80px 180px 1fr;min-height:43px;align-items:center}}.row>strong{{font-family:ui-monospace,monospace}}.row>span{{color:var(--muted);padding-right:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
-.track{{height:29px;position:relative;border-bottom:1px solid var(--line);background:repeating-linear-gradient(to right,transparent 0,transparent calc(10% - 1px),#eef1f4 calc(10% - 1px),#eef1f4 10%)}}.segment{{position:absolute;top:2px;height:27px;min-width:2px}}.read{{background:var(--read)}}.write{{background:var(--write)}}.model{{background:var(--model)}}.merge{{background:var(--merge)}}.shared{{background-image:repeating-linear-gradient(135deg,#0000 0 7px,#ffffff66 7px 10px)}}.duration{{position:absolute;z-index:2;top:6px;text-align:center;color:#15191d;font-weight:600;pointer-events:none;white-space:nowrap}}
+.track{{height:29px;position:relative;border-bottom:1px solid var(--line);background:repeating-linear-gradient(to right,transparent 0,transparent calc(10% - 1px),#eef1f4 calc(10% - 1px),#eef1f4 10%)}}.segment{{position:absolute;top:2px;height:27px;min-width:2px}}.read{{background:var(--read)}}.write{{background:var(--write)}}.control{{background:var(--control)}}.model{{background:var(--model)}}.merge{{background:var(--merge)}}.resolved{{background:var(--resolved)}}.shared{{background-image:repeating-linear-gradient(135deg,#0000 0 7px,#ffffff66 7px 10px)}}.duration{{position:absolute;z-index:2;top:6px;text-align:center;color:#15191d;font-weight:600;pointer-events:none;white-space:nowrap}}
 footer{{margin-top:17px;color:var(--muted);font-size:12px}}@media(max-width:780px){{.axis,.panel-head{{margin-left:135px}}.row{{grid-template-columns:60px 75px 1fr}}}}
 </style></head><body><main>
 <header><div><h1>{html.escape(config["title"])}</h1><p>Both traces aligned to their own start at t=0</p></div><div class="walls"><div>Baseline wall<strong>{baseline["wall"]:.1f}s</strong></div><div>Concurrent wall<strong>{concurrent["wall"]:.1f}s</strong></div></div></header>
-<div class="legend"><span class="key" style="--color:var(--read)">read round</span><span class="key" style="--color:var(--write)">write round</span><span class="key" style="--color:var(--model)">model-only round</span><span class="key" style="--color:var(--merge)">FUSE merge</span></div>
+<div class="legend"><span class="key" style="--color:var(--read)">read round</span><span class="key" style="--color:var(--write)">write round</span><span class="key" style="--color:var(--control)">planner control round</span><span class="key" style="--color:var(--model)">model-only round</span><span class="key" style="--color:var(--merge)">FUSE merge</span><span class="key" style="--color:var(--resolved)">planner-resolved goal</span></div>
 <div class="axis">{tick_html}</div>
 <section class="panel"><div class="panel-head"><h2>Serial baseline</h2><span>{baseline["wall"]:.1f}s wall time</span></div>{''.join(baseline_rows)}</section>
 <section class="panel"><div class="panel-head"><h2>Concurrent SOG</h2><span>{concurrent["wall"]:.1f}s wall time</span></div>{''.join(concurrent_rows)}</section>

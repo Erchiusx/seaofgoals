@@ -9,6 +9,13 @@ from collections import defaultdict
 from pathlib import Path
 
 
+PLANNER_CONTROL_TOOLS = {
+    "set_goal_resolution",
+    "set_predicted_actions_plan",
+    "set_preload_plan",
+}
+
+
 def timestamp(value):
     return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
 
@@ -19,15 +26,24 @@ def is_write(name, arguments):
     if name != "bash":
         return False
     command = str(arguments.get("command", ""))
+    command_words = re.sub(r"'(?:[^']*)'|\"(?:\\.|[^\"])*\"", "", command)
     return bool(
         re.search(
             r"\b(apply_patch|sed\s+-i|perl\s+-i|tee|mv|cp|rm|mkdir|touch|"
             r"heavy-compile\.mjs\s+(build|test)|package\.mjs|"
             r"npm(?:\s+--[A-Za-z0-9_-]+(?:[= ][^\s;&|]+)?)*\s+(run|test|install)|"
             r"git\s+(apply|checkout|reset))\b",
-            command,
+            command_words,
         )
     )
+
+
+def round_kind(calls):
+    if any(is_write(name, arguments) for name, arguments in calls):
+        return "write"
+    if any(name in PLANNER_CONTROL_TOOLS for name, _ in calls):
+        return "control"
+    return "read"
 
 
 def main():
@@ -81,22 +97,34 @@ def main():
             if group.get("baseline_turns")
         }
 
-    print("Goal | Read rounds | Read time | Write rounds | Write time | Goal time")
-    print("-----|--------------|-----------|---------------|------------|----------")
+    print(
+        "Goal | Read rounds | Read time | Write rounds | Write time | "
+        "Planner rounds | Planner time | Goal time"
+    )
+    print(
+        "-----|--------------|-----------|---------------|------------|"
+        "----------------|--------------|----------"
+    )
     for goal in sorted(turns):
         reads = []
         writes = []
+        controls = []
         for turn in turns[goal]:
             calls = [(name, args) for name, args in turn["calls"] if name != "end_goal"]
             if not calls:
                 continue
             duration = (turn["end"] - turn["start"]).total_seconds()
-            target = writes if any(is_write(name, args) for name, args in calls) else reads
+            target = {
+                "read": reads,
+                "write": writes,
+                "control": controls,
+            }[round_kind(calls)]
             target.append(duration)
-        goal_time = sum(reads) + sum(writes)
+        goal_time = sum(reads) + sum(writes) + sum(controls)
         print(
             f"{goal} | {len(reads)} | {sum(reads):.1f}s | "
-            f"{len(writes)} | {sum(writes):.1f}s | {goal_time:.1f}s"
+            f"{len(writes)} | {sum(writes):.1f}s | "
+            f"{len(controls)} | {sum(controls):.1f}s | {goal_time:.1f}s"
         )
 
 

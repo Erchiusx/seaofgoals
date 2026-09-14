@@ -106,6 +106,54 @@ queue time or hidden reasoning time. Discuss with Pi and endpoint maintainers
 whether a request-start event or transport-level timing can establish cleaner
 boundaries before using this phase as an explanatory metric.
 
+The phase renderer must preserve each recorded interval's original timestamps.
+An earlier implementation summed every phase kind per goal and redrew the sums
+in a fixed `model_wait`, reasoning, generation, read, write order from the goal
+start. That chart preserved totals but fabricated phase placement and made G001
+appear to overlap an initial contiguous G000 reasoning block. The renderer now
+draws the recorded intervals directly. In the affected run, G000 published the
+G001 plan at 44.56 seconds and the scheduler started G001 at 45.28 seconds while
+G000 continued planning later goals; that overlap is intentional incremental
+planning.
+
+## Goal-local Skill Context
+
+Removing the full skill from the prompt is insufficient when the target
+repository embeds the same `SKILL.md`. The qsv planner and inspection goal found
+and read that file from the package tree. The experiment configuration can now
+mask selected embedded instruction directories in the bwrap view for goals
+that explore or edit the workspace. Build, test, and package goals can retain
+the original directories, so their actual command inputs are unchanged.
+
+The first masked verification run still contained attempted reads of the known
+paths, but the read tool returned `ENOENT`, `rg` exited with code 2, and `find`
+returned no matching files. No skill contents entered model history. This is a
+filesystem visibility guarantee rather than a prompt request.
+
+Pi's SDK creates a `DefaultResourceLoader` with standard skill discovery when
+the caller omits `resourceLoader`. A later run left build goals unmasked so the
+real command inputs remained available; Pi discovered the embedded release
+skill, and G005 incorrectly executed the complete build, test, and package
+workflow. SOG now supplies an explicit loader with `noSkills: true`. Filesystem
+masking covers every goal except packaging, while G007 retains the real files
+without exposing them through Pi's skill system.
+
+Pi's `session.prompt` can settle normally even when its final assistant message
+has `stopReason: error`. The SDK runner must inspect that final message and exit
+nonzero for `error` or `aborted`; otherwise a partially published G000 plan is
+reported as a successful planner exit and surfaces later as a scheduler
+deadlock. This occurred in run `6137e946-665a-47b7-85b7-15d9dacf36a1`: the
+endpoint rejected G000 while it was publishing G005, so G006-G008 never
+received plans.
+
+The apparent post-tool tail is model output, not Pi shutdown. In the masked
+run `8a464305-f5ce-4659-ba6c-73fc9e7ad47d`, G001 spent 40.5 seconds between its
+last tool result and final assistant turn, then only 0.01 seconds between that
+turn and process exit. The model generated a 913-output-token inspection
+summary even though history handoff was disabled. Normal goal prompts now
+require the final response to be exactly `done`, so completion still has a
+no-tool turn but does not spend tokens restating work that the runtime ignores.
+
 ## Real qsv Repeated Runs
 
 Three paired `gpt-5.6` runs after removing G000's accidental preload measured

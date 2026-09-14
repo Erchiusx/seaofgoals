@@ -13,6 +13,33 @@ This preserves the distinction between planning availability and execution
 dependencies: the planner can overlap with already-unblocked goals, and a
 single generation round need not be spent on every individual goal.
 
+## Planner-resolved goals
+
+Some compiled goals exist only to inspect the workspace and publish knowledge.
+Starting a second Pi session for such a goal repeats work that G000 can perform
+while constructing downstream plans. G000 may now publish one of two explicit
+resolutions:
+
+- `completed_by_planner`: G000 performed the goal's read-only work and supplies
+  its result as context for successors.
+- `no_action`: workspace evidence shows that a conditional goal requires no
+  file changes or commands in this run.
+
+These are not ordinary successful agent runs. Once the goal's graph
+predecessors are satisfied, the scheduler moves it directly from queued to
+completed, inherits the accepted workspace unchanged, stores the published
+context as its predecessor summary, and unlocks successors. It does not spawn
+Pi, create a task workspace, or invoke merge. The trace records a
+`planner_goal_resolved` event, and the scheduler keeps a separate resolved
+order so reports do not count the node as an agent run or merge.
+
+This mechanism is limited to read-only or no-op work. G000 must not resolve a
+goal that owns file writes, a required build or test, or work whose relevant
+predecessor state it has not observed. Those goals still require a normal
+workspace execution and merge. In the port-widget case, an initial audit or
+validation-plan goal can be absorbed into G000; final validation after edits
+cannot.
+
 ## Latest Run
 
 Run: `5554f1dc-86b2-4f91-99ba-f377017e2be9--20260910T111208Z--port-widget--concurrent-sog--preload-context`

@@ -1,0 +1,6 @@
+pair-1	baseline	bbd266ef-b1bc-4260-a9ea-03c29e08378a--20260913T070142Z--port-widget--serial-sog
+pair-1	concurrent	73382199-dd83-49de-82f7-55762e4a4911--20260913T070626Z--port-widget--concurrent-sog--fuse--preload-context
+pair-2	baseline	b4005a1d-2462-4ca7-8804-a9c4e206f153--20260913T071535Z--port-widget--serial-sog
+pair-2	concurrent	48c289b1-303e-4762-b692-6c83bff0783a--20260913T072032Z--port-widget--concurrent-sog--fuse--preload-context
+pair-3	baseline	e4352411-c719-4219-8bfc-ed8434a04f1d--20260913T072754Z--port-widget--serial-sog
+pair-3	concurrent	47e0468b-8613-47b7-b436-ba10371eaadf--20260913T073222Z--port-widget--concurrent-sog--fuse--preload-context

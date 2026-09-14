@@ -1,0 +1,27 @@
+{
+  "title": "port-widget: ten-run wall-time comparison",
+  "baseline": [
+    {"id": "6c1aecbd", "trace": "6c1aecbd-994d-42cc-9903-14ed3d67ff2b--20260911T074135Z--port-widget--serial-sog/sog-trace.jsonl"},
+    {"id": "4ce86594", "trace": "4ce86594-ada3-445a-9988-e2b117d56776--20260911T091013Z--port-widget--serial-sog/sog-trace.jsonl"},
+    {"id": "b7cdcc25", "trace": "b7cdcc25-3603-4511-bcbb-6ed00c13355c--20260911T090710Z--port-widget--serial-sog/sog-trace.jsonl"},
+    {"id": "d1164506", "trace": "d1164506-16ef-445f-8b83-2958721a2191--20260911T091308Z--port-widget--serial-sog/sog-trace.jsonl"},
+    {"id": "3cb2a9f6", "trace": "3cb2a9f6-d395-4750-9037-b89bf8270ba5--20260911T082240Z--port-widget--serial-sog/sog-trace.jsonl"},
+    {"id": "8e523492", "trace": "8e523492-0b56-46ba-aea2-d2d39ed7589d--20260911T053126Z--port-widget--serial-sog/sog-trace.jsonl"},
+    {"id": "181390ec", "trace": "181390ec-f3fd-49b5-8940-2de378696aa0--20260911T090330Z--port-widget--serial-sog/sog-trace.jsonl"},
+    {"id": "10f49b8c", "trace": "10f49b8c-f46d-43b7-afb7-ff72b849bff8--20260911T073727Z--port-widget--serial-sog/sog-trace.jsonl"},
+    {"id": "af1313de", "trace": "af1313de-c753-4646-9724-f1ade5a97bd3--20260911T082602Z--port-widget--serial-sog/sog-trace.jsonl"},
+    {"id": "f8cacd56", "trace": "f8cacd56-b7d9-4a8f-9d2f-31adb9f93f2f--20260911T082952Z--port-widget--serial-sog/sog-trace.jsonl"}
+  ],
+  "concurrent": [
+    {"id": "f05f0c86", "trace": "f05f0c86-07a0-4601-ae13-642e0e882039--20260911T085736Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl"},
+    {"id": "c4e97830", "trace": "c4e97830-3897-4661-b8cc-a962137cfa3e--20260911T064816Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl"},
+    {"id": "31883e38", "trace": "31883e38-b941-4aef-95b7-365fbaa7c2fb--20260911T085021Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl"},
+    {"id": "cdbe7dc9", "trace": "cdbe7dc9-6c96-4fbc-b87d-9f3a2cef2acb--20260911T081518Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl"},
+    {"id": "842c2b7f", "trace": "842c2b7f-f9cf-468d-8d02-b74e8430646b--20260911T072916Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl"},
+    {"id": "a5ad9b3b", "trace": "a5ad9b3b-5fc0-4330-b9ac-ec367ecb2c2f--20260911T073335Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl"},
+    {"id": "20585715", "trace": "20585715-1272-48ef-82e9-b9efd941801d--20260911T081847Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl"},
+    {"id": "ddfefa54", "trace": "ddfefa54-bc04-4e4b-91e0-89f796398926--20260911T085343Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl"},
+    {"id": "2b87e1ff", "trace": "2b87e1ff-6185-4b0e-a418-54738c168343--20260911T091655Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl"},
+    {"id": "6bb5e1bc", "trace": "6bb5e1bc-dc6a-44ff-9785-94353ccf4f2f--20260911T081041Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl"}
+  ]
+}

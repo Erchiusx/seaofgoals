@@ -28,6 +28,8 @@ MANAGED_ENV = {
     "SOG_PRELOAD_GOAL_CONTEXT",
     "SOG_PROMPT_CACHE_KEY",
     "SOG_PROMPT_CACHE_RETENTION",
+    "SOG_BWRAP_MASK_GOALS",
+    "SOG_BWRAP_MASK_WORKSPACE_PATHS",
     "SOG_SANDBOX",
     "SOG_SKILL_PATH",
 }
@@ -48,6 +50,12 @@ def enum(value, choices, context):
 def boolean(value, context):
     if not isinstance(value, bool):
         raise ValueError(f"{context} must be a boolean")
+    return value
+
+
+def string_list(value, context):
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+        raise ValueError(f"{context} must be a list of non-empty strings")
     return value
 
 
@@ -98,7 +106,11 @@ def load_config(path, repo_root):
     workflow_enabled = boolean(workflow.get("enabled", True), "workflow.enabled")
 
     workspace = config.get("workspace", {})
-    require_keys(workspace, {"backend", "sandbox", "conflictMode"}, "workspace")
+    require_keys(
+        workspace,
+        {"backend", "sandbox", "conflictMode", "maskedPaths", "maskedPathGoals"},
+        "workspace",
+    )
     workspace_backend = enum(
         workspace.get("backend", "copy-tree"),
         ("copy-tree", "fuse"),
@@ -110,6 +122,14 @@ def load_config(path, repo_root):
         ("strict", "file-writes-only"),
         "workspace.conflictMode",
     )
+    masked_paths = string_list(workspace.get("maskedPaths", []), "workspace.maskedPaths")
+    masked_path_goals = string_list(
+        workspace.get("maskedPathGoals", []), "workspace.maskedPathGoals"
+    )
+    for path in masked_paths:
+        parsed = Path(path)
+        if parsed.is_absolute() or ".." in parsed.parts:
+            raise ValueError("workspace.maskedPaths entries must stay inside the workspace")
 
     planning = config.get("planning", {})
     require_keys(planning, {"incremental", "preload"}, "planning")
@@ -184,6 +204,8 @@ def load_config(path, repo_root):
         "workspace_backend": workspace_backend,
         "sandbox": sandbox,
         "conflict_mode": conflict_mode,
+        "masked_paths": masked_paths,
+        "masked_path_goals": masked_path_goals,
         "incremental": incremental,
         "preload": preload,
         "pi_handoff": pi_handoff,
@@ -216,6 +238,10 @@ def build_environment(config):
         "SOG_PROMPT_CACHE_RETENTION": config["cache_retention"],
         "SOG_CONFIG_FILE": str(config["runtime_config"]),
     }
+    if config.get("masked_paths"):
+        values["SOG_BWRAP_MASK_WORKSPACE_PATHS"] = os.pathsep.join(config["masked_paths"])
+    if config.get("masked_path_goals"):
+        values["SOG_BWRAP_MASK_GOALS"] = ",".join(config["masked_path_goals"])
     if config["fuse_support"]:
         values["SOG_CABAL_FLAGS"] = "-f fuse"
     if config["cache_key"] is not None:

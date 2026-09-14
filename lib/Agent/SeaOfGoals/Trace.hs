@@ -121,6 +121,11 @@ data HarnessEvent
       , eventDagCompleted :: Set Text
       , eventDagStatuses :: Map Text Text
       }
+  | PlannerGoalResolved
+      { eventResolvedGoalId :: Text
+      , eventResolutionKind :: Text
+      , eventResolutionContext :: Text
+      }
   | HarnessFinished
       { eventReason :: Text
       }
@@ -249,6 +254,13 @@ instance ToJSON HarnessEvent where
           , "completed" .= completed
           , "statuses" .= statuses
           ]
+      PlannerGoalResolved goalId kind context ->
+        base
+          "planner_goal_resolved"
+          [ "goal_id" .= goalId
+          , "resolution_kind" .= kind
+          , "context" .= context
+          ]
       HarnessFinished reason ->
         base "harness_finished" ["reason" .= reason]
    where
@@ -274,4 +286,5 @@ eventType event =
     ProcessFinished{} -> "process_finished"
     CodexEventObserved{} -> "codex_event"
     DagSnapshotObserved{} -> "dag_snapshot"
+    PlannerGoalResolved{} -> "planner_goal_resolved"
     HarnessFinished{} -> "harness_finished"

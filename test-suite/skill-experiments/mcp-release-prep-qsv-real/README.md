@@ -30,6 +30,19 @@ make run-experiment-config \
   CONFIG=test-suite/skill-experiments/mcp-release-prep-qsv-real/experiment.baseline.json
 ```
 
+The concurrent configuration uses the versioned
+`qsv-9673f2a-v4-goal-local-context` compiled graph. Its runtime skill-context
+file is intentionally empty: G000 receives the complete compiled graph, while
+each execution goal receives only the original task, graph topology, its
+self-contained goal contract, and any planned context. The single-Pi baseline
+continues to receive the original skill text.
+
+The Pi SDK session disables automatic skill discovery because the compiled
+graph is its instruction source. In addition, the concurrent bwrap view masks
+the package's embedded `mcp-release-prep` and `release-prep` instruction
+directories from every goal except packaging. The package goal retains the
+original directories so the MCPB contains the real project files.
+
 Validate and inspect either configuration without running the model by using
 `make show-experiment-config CONFIG=...`. Provider credentials remain outside
 the JSON file; `run-experiment.sh` loads `~/.secrets/rise` or

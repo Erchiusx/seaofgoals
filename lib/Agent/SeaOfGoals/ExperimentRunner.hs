@@ -94,6 +94,7 @@ import Agent.SeaOfGoals.Scheduling.GraphChase
   ( ChaseState (..)
   , initialChaseState
   )
+import Agent.SeaOfGoals.Scheduling.PlannerResolution qualified as PlannerResolution
 import Agent.SeaOfGoals.Scheduling.SerialScheduler
   ( SerialScheduler (..)
   , SerialSchedulerResult (..)
@@ -179,6 +180,7 @@ import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.IORef
   ( IORef
+  , atomicModifyIORef'
   , modifyIORef'
   , newIORef
   , readIORef
@@ -248,6 +250,8 @@ data ExperimentContext = ExperimentContext
   , experimentGoalContextPreloadConfig :: GoalContextPreloadConfig
   , experimentGoalContextPreloadPlan :: GoalContextPreloadPlan
   , experimentDynamicGoalContextPreloadPlan :: IORef GoalContextPreloadPlan
+  , experimentPlannerResolutions
+      :: IORef (Map GoalNodeId PlannerResolution.Resolution)
   , experimentPredictedActionsPlan :: PredictedActionsPlan
   , experimentHarnessLifecycle :: Bool
   }
@@ -344,6 +348,7 @@ loadExperimentContext apiKey prompt = do
   predictedActionsPlan <- loadPredictedActionsPlanFromEnv
   harnessLifecycle <- loadHarnessLifecycleMode
   dynamicGoalContextPreloadPlan <- newIORef (GoalContextPreloadPlan Map.empty)
+  plannerResolutions <- newIORef Map.empty
   createDirectoryIfMissing True controlRoot
   tools <-
     loadExperimentToolsWithControlRoot
@@ -423,6 +428,7 @@ loadExperimentContext apiKey prompt = do
       , experimentGoalContextPreloadConfig = goalContextPreloadConfig
       , experimentGoalContextPreloadPlan = goalContextPreloadPlan
       , experimentDynamicGoalContextPreloadPlan = dynamicGoalContextPreloadPlan
+      , experimentPlannerResolutions = plannerResolutions
       , experimentPredictedActionsPlan = predictedActionsPlan
       , experimentHarnessLifecycle = harnessLifecycle
       }
@@ -581,6 +587,7 @@ runConcurrentPromptWithGraph context compiledGraph = do
             goalGraph
             (GoalNodeId "G000")
             (goalPlanReady context)
+            (resolveGoalFromPlanner context summariesRef runsRef)
         else
           runConcurrentChase
             ConcurrentChaseRunner
@@ -655,6 +662,15 @@ goalPlanReady context goalId
               GoalContextPreloadPlan goals -> Map.member (unGoalNodeId goalId) goals
       pure (predictedReady || preloadReady || dynamicReady)
 
+planContainsGoal :: FilePath -> PredictedActionsPlan -> GoalNodeId -> IO Bool
+planContainsGoal path fallback goalId = do
+  exists <- doesFileExist path
+  plan <-
+    if exists
+      then either (const (pure fallback)) pure =<< readPredictedActionsPlanFile path
+      else pure fallback
+  pure (Map.member (unGoalNodeId goalId) (predictedActionsPlanGoals plan))
+
 goalPreloadPlanContainsGoal :: ExperimentContext -> GoalNodeId -> IO Bool
 goalPreloadPlanContainsGoal context goalId = do
   let path = experimentControlRoot context </> "preload-plan.json"
@@ -667,15 +683,6 @@ goalPreloadPlanContainsGoal context goalId = do
         Left _ -> False
         Right (GoalContextPreloadPlan goals) ->
           Map.member (unGoalNodeId goalId) goals
-
-planContainsGoal :: FilePath -> PredictedActionsPlan -> GoalNodeId -> IO Bool
-planContainsGoal path fallback goalId = do
-  exists <- doesFileExist path
-  plan <-
-    if exists
-      then either (const (pure fallback)) pure =<< readPredictedActionsPlanFile path
-      else pure fallback
-  pure (Map.member (unGoalNodeId goalId) (predictedActionsPlanGoals plan))
 
 requireConcurrentWorkspaceRemap :: IO ()
 requireConcurrentWorkspaceRemap = do
@@ -1240,7 +1247,94 @@ recordPiPlanPublication context controlRoot event =
                           }
                     , eventActiveSubgoal = Nothing
                     }
+    ToolResultObserved
+      { eventToolName = "set_goal_resolution"
+      , eventResult = result
+      } ->
+        case Text.stripPrefix "SOG_GOAL_RESOLUTION:" (piToolResultText result) of
+          Nothing -> pure ()
+          Just resolutionText ->
+            case PlannerResolution.decodeResolution (Text.strip resolutionText) of
+              Left err ->
+                experimentEventSink context $
+                  EffectRecorded
+                    { eventEffect =
+                        EffectRecord
+                          { effectKind = "planner_resolution_parse_error"
+                          , effectResource = "runtime"
+                          , effectDetail = Just (Text.pack err)
+                          }
+                    , eventActiveSubgoal = Just "G000"
+                    }
+              Right resolution
+                | PlannerResolution.resolutionGoalId resolution == "G000" ->
+                    experimentEventSink context $
+                      EffectRecorded
+                        { eventEffect =
+                            EffectRecord
+                              { effectKind = "planner_resolution_rejected"
+                              , effectResource = "G000"
+                              , effectDetail = Just "the planner cannot resolve itself"
+                              }
+                        , eventActiveSubgoal = Just "G000"
+                        }
+                | otherwise -> do
+                    let goalId = GoalNodeId (PlannerResolution.resolutionGoalId resolution)
+                    modifyIORef'
+                      (experimentPlannerResolutions context)
+                      (Map.insert goalId resolution)
     _ -> pure ()
+
+resolveGoalFromPlanner
+  :: ExperimentContext
+  -> Summaries
+  -> IORef (Map GoalNodeId Int)
+  -> GoalNode
+  -> IO (Maybe AgentRunResult)
+resolveGoalFromPlanner context summaries runs node = do
+  runCounts <- readIORef runs
+  if Map.member (goalNodeId node) runCounts
+    then do
+      modifyIORef'
+        (experimentPlannerResolutions context)
+        (Map.delete (goalNodeId node))
+      pure Nothing
+    else do
+      resolution <-
+        atomicModifyIORef'
+          (experimentPlannerResolutions context)
+          ( \resolutions ->
+              ( Map.delete (goalNodeId node) resolutions
+              , Map.lookup (goalNodeId node) resolutions
+              )
+          )
+      traverse applyResolution resolution
+ where
+  applyResolution resolution = do
+    let
+      resolutionContext = PlannerResolution.resolutionContext resolution
+      resolutionKind = plannerResolutionKindText (PlannerResolution.resolutionKind resolution)
+    rememberSummary summaries (goalNodeId node) resolutionContext
+    experimentEventSink context $
+      PlannerGoalResolved
+        { eventResolvedGoalId = unGoalNodeId (goalNodeId node)
+        , eventResolutionKind = resolutionKind
+        , eventResolutionContext = resolutionContext
+        }
+    pure
+      AgentRunResult
+        { agentRunResultGoal = goalNodeId node
+        , agentRunResultStatus = "success"
+        , agentRunResultSummaryForDependents = resolutionContext
+        , agentRunResultReads = Set.empty
+        , agentRunResultWrites = Set.empty
+        , agentRunResultSnapshot =
+            SnapshotId ("planner-resolution:" <> unGoalNodeId (goalNodeId node))
+        }
+
+plannerResolutionKindText :: PlannerResolution.Kind -> Text
+plannerResolutionKindText PlannerResolution.CompletedByPlanner = "completed_by_planner"
+plannerResolutionKindText PlannerResolution.NoAction = "no_action"
 
 piToolResultText :: Text -> Text
 piToolResultText result =

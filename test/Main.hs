@@ -78,6 +78,7 @@ import Agent.SeaOfGoals.Scheduling.GraphChase
   , ChaseState (..)
   , GoalLaunch (..)
   , completeGoal
+  , completeQueuedGoal
   , initialChaseState
   , nextReadyGoals
   , replanForMergeConflict
@@ -88,6 +89,7 @@ import Agent.SeaOfGoals.Scheduling.MergeScheduler
   , applyMergeConflict
   , goalGraphDescendants
   )
+import Agent.SeaOfGoals.Scheduling.PlannerResolution qualified as PlannerResolution
 import Agent.SeaOfGoals.Scheduling.Replan
   ( ReplanInput (..)
   , ReplanResult (..)
@@ -229,6 +231,7 @@ main = do
   configFileTest
   compilerGraphValidationTest
   compilerPreloadPlannerPromptTest
+  plannerResolutionParsingTest
   workspaceConflictPolicyTest
   goalContextPreloadTest
   goalGraphReductionTest
@@ -441,6 +444,31 @@ compilerPreloadPlannerPromptTest = do
   assertBool
     "compiler preload planner prompt names preload plan tool"
     ("set_preload_plan" `Text.isInfixOf` prompt)
+  assertBool
+    "compiler preload planner prompt names goal resolution tool"
+    ("set_goal_resolution" `Text.isInfixOf` prompt)
+
+plannerResolutionParsingTest :: IO ()
+plannerResolutionParsingTest = do
+  assertEqual
+    "planner resolution parses read-only completion"
+    ( Right
+        PlannerResolution.Resolution
+          { PlannerResolution.resolutionGoalId = "G001"
+          , PlannerResolution.resolutionKind = PlannerResolution.CompletedByPlanner
+          , PlannerResolution.resolutionContext = "Audit complete."
+          }
+    )
+    ( PlannerResolution.decodeResolution
+        "{\"goal_id\":\"G001\",\"kind\":\"completed_by_planner\",\"context\":\"Audit complete.\"}"
+    )
+  assertBool
+    "planner resolution rejects unknown kinds"
+    ( case PlannerResolution.decodeResolution
+        "{\"goal_id\":\"G002\",\"kind\":\"write_complete\",\"context\":\"bad\"}" of
+        Left _ -> True
+        Right _ -> False
+    )
 
 goalContextPreloadTest :: IO ()
 goalContextPreloadTest = do
@@ -1484,25 +1512,28 @@ graphChaseSchedulerTest = do
   completedS2 <-
     either (fail . Text.unpack) pure $
       completeGoal (fakeAgentRunResult (schedulerGoal "S2" 2)) completedS1
+  resolvedS4 <-
+    either (fail . Text.unpack) pure $
+      completeQueuedGoal (fakeAgentRunResult (schedulerGoal "S4" 4)) completedS2
   assertEqual
-    "graph chase records completed concurrent goals"
-    (Set.fromList [goalId "S1", goalId "S2"])
-    (Map.keysSet (chaseCompleted completedS2))
+    "graph chase records run and planner-resolved goals"
+    (Set.fromList [goalId "S1", goalId "S2", goalId "S4"])
+    (Map.keysSet (chaseCompleted resolvedS4))
 
   replanned <-
     either (fail . Text.unpack) pure $
-      replanForMergeConflict (goalId "S2") (goalId "S1") completedS2
+      replanForMergeConflict (goalId "S2") (goalId "S1") resolvedS4
   assertEqual
     "graph chase keeps the serial former completed"
-    (Set.singleton (goalId "S1"))
+    (Set.fromList [goalId "S1", goalId "S4"])
     (Map.keysSet (chaseCompleted replanned))
   assertEqual
     "graph chase requeues invalidated latter and descendant"
-    (Set.fromList [goalId "S2", goalId "S3", goalId "S4"])
+    (Set.fromList [goalId "S2", goalId "S3"])
     (chaseQueued replanned)
   assertEqual
     "graph chase ready set follows updated dependency"
-    [goalId "S2", goalId "S4"]
+    [goalId "S2"]
     (goalNodeId <$> nextReadyGoals replanned)
   assertBool
     "graph chase records replan event"
@@ -1600,7 +1631,9 @@ concurrentChaseSchedulerTest = do
 plannerChaseSchedulerTest :: IO ()
 plannerChaseSchedulerTest = do
   plannedRef <- newIORef (Set.empty :: Set.Set GoalNodeId)
+  resolvedRef <- newIORef False
   executionWhilePlanningRef <- newIORef False
+  launchedRef <- newIORef []
   mergedRef <- newIORef []
   let
     graph =
@@ -1611,7 +1644,7 @@ plannerChaseSchedulerTest = do
               , (goalId "G001", schedulerGoal "G001" 1)
               , (goalId "G002", schedulerGoal "G002" 2)
               ]
-        , goalGraphEdges = Set.empty
+        , goalGraphEdges = Set.singleton (goalId "G001", goalId "G002")
         }
     runner =
       ConcurrentChaseRunner
@@ -1623,17 +1656,17 @@ plannerChaseSchedulerTest = do
                 atomicModifyIORef'
                   plannedRef
                   ( \ids ->
-                      ( Set.insert (goalId "G002") (Set.insert (goalId "G001") ids)
+                      ( Set.insert (goalId "G002") ids
                       , ()
                       )
                   )
+                writeIORef resolvedRef True
                 threadDelay 100000
               else do
+                modifyIORef' launchedRef (<> [goalNodeId node])
                 planned <- readIORef plannedRef
-                when
-                  (goalId "G001" `Set.member` planned)
-                  (writeIORef executionWhilePlanningRef True)
-                when (goalNodeId node == goalId "G001") (threadDelay 50000)
+                when (goalId "G002" `Set.member` planned) $
+                  writeIORef executionWhilePlanningRef True
             pure (Right (fakeAgentRunResult node))
         , concurrentChaseMergeGoal = \result -> do
             modifyIORef' mergedRef (<> [agentRunResultGoal result])
@@ -1645,13 +1678,24 @@ plannerChaseSchedulerTest = do
       graph
       (goalId "G000")
       (\nodeId -> Set.member nodeId <$> readIORef plannedRef)
+      ( \node -> do
+          resolved <- readIORef resolvedRef
+          pure $
+            if resolved && goalNodeId node == goalId "G001"
+              then Just (fakeAgentRunResult node)
+              else Nothing
+      )
   case result of
     Left err -> fail ("expected planner chase success, got " <> Text.unpack err)
-    Right summary ->
+    Right summary -> do
       assertEqual
         "planner chase excludes the planner and preserves serial merge order"
-        [goalId "G001", goalId "G002"]
+        [goalId "G002"]
         (concurrentChaseMergeOrder summary)
+      assertEqual
+        "planner chase records goals completed without agent launch"
+        [goalId "G001"]
+        (concurrentChaseResolvedOrder summary)
   overlapped <- readIORef executionWhilePlanningRef
   assertBool
     "planner chase starts a goal after its plan while planner is still running"
@@ -1659,8 +1703,13 @@ plannerChaseSchedulerTest = do
   merged <- readIORef mergedRef
   assertEqual
     "planner control work is not passed to workspace merge"
-    [goalId "G001", goalId "G002"]
+    [goalId "G002"]
     merged
+  launched <- readIORef launchedRef
+  assertEqual
+    "planner-completed goal does not launch an agent"
+    [goalId "G002"]
+    launched
 
 serialSchedulerTest :: IO ()
 serialSchedulerTest = do

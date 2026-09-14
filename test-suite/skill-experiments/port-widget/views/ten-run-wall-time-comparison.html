@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>port-widget: ten-run wall-time comparison</title>
+<style>
+:root{--bg:#fafbfc;--surface:#fff;--text:#202428;--muted:#657180;--line:#dce2e8;--baseline:#d8a43d;--concurrent:#42b99a;--danger:#b4463d}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,sans-serif;letter-spacing:0}
+main{width:min(1380px,calc(100% - 32px));margin:28px auto 56px}h1{font-size:24px;margin:0}header p,.note{color:var(--muted);margin:4px 0 0}.summary{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);margin:22px 0 28px}.stat{background:var(--surface);padding:15px}.stat span{display:block;color:var(--muted);font-size:12px}.stat strong{font-size:22px}section{background:var(--surface);border:1px solid var(--line);padding:20px;margin-top:18px}h2{font-size:17px;margin:0 0 4px}.axis{height:30px;position:relative;margin-left:220px;border-bottom:1px solid #8993a0}.axis span{position:absolute;bottom:5px;transform:translateX(-50%);font-size:11px;color:var(--muted)}.axis span:first-child{transform:none}.axis span:last-child{transform:translateX(-100%)}.distribution-row{display:grid;grid-template-columns:220px 1fr;align-items:center;margin-top:12px}.row-label strong,.row-label span{display:block}.row-label span{font-size:12px;color:var(--muted)}.plot{height:68px;position:relative;background:repeating-linear-gradient(to right,transparent 0,transparent calc(10% - 1px),#edf0f3 calc(10% - 1px),#edf0f3 10%)}.dot{position:absolute;width:13px;height:13px;border-radius:50%;transform:translateX(-50%);border:2px solid #fff;box-shadow:0 0 0 1px #0003;z-index:2}.dot span{display:none;position:absolute;left:50%;top:-30px;transform:translateX(-50%);white-space:nowrap;background:#202428;color:#fff;padding:3px 6px;font-size:11px}.dot:hover{z-index:5;scale:1.2}.dot:hover span{display:block}.baseline{background:var(--baseline)}.concurrent{background:var(--concurrent)}.marker{position:absolute;top:0;bottom:0;width:0;border-left:2px solid #4d5966}.marker.mean{border-left-style:dashed;opacity:.6}.rank-row{display:grid;grid-template-columns:34px 1fr 150px 70px;align-items:center;min-height:34px}.rank-plot{height:22px;position:relative;border-bottom:1px solid var(--line)}.connector{position:absolute;top:10px;height:2px;background:#9ba5af}.rank-dot{position:absolute;top:5px;width:12px;height:12px;border-radius:50%;transform:translateX(-50%);z-index:2}.rank-row>span{padding-left:15px;font-variant-numeric:tabular-nums}.rank-row em{font-style:normal;font-weight:600;text-align:right}.slower{color:var(--danger)}.faster{color:#148267}.legend{display:flex;gap:18px;margin:12px 0 0;color:var(--muted)}.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}.rank-axis{margin-left:34px;margin-right:220px}code{font-size:12px}@media(max-width:760px){.summary{grid-template-columns:1fr 1fr}.axis{margin-left:120px}.distribution-row{grid-template-columns:120px 1fr}.rank-row{grid-template-columns:25px 1fr 105px 55px}.rank-axis{margin-left:25px;margin-right:160px}}
+</style></head><body><main>
+<header><h1>port-widget: ten-run wall-time comparison</h1><p>10 complete runs per configuration · gpt-5.6 · fresh UUID workspace per run</p></header>
+<div class="summary">
+  <div class="stat"><span>Single Pi mean</span><strong>215.8s</strong></div>
+  <div class="stat"><span>SoG concurrent mean</span><strong>221.8s</strong></div>
+  <div class="stat"><span>Mean difference</span><strong>+6.0s</strong></div>
+  <div class="stat"><span>Median difference</span><strong>+8.8s</strong></div>
+</div>
+<section><h2>Wall-time distributions</h2><p class="note">Solid marker: median. Dashed marker: mean. Hover a point for its run ID; click to open the trace.</p>
+  <div class="legend"><span><i class="baseline"></i>Single Pi</span><span><i class="concurrent"></i>SoG concurrent</span></div>
+  <div class="axis"><span style="left:0.0000%">160s</span><span style="left:10.0000%">180s</span><span style="left:20.0000%">200s</span><span style="left:30.0000%">220s</span><span style="left:40.0000%">240s</span><span style="left:50.0000%">260s</span><span style="left:60.0000%">280s</span><span style="left:70.0000%">300s</span><span style="left:80.0000%">320s</span><span style="left:90.0000%">340s</span><span style="left:100.0000%">360s</span></div>
+
+    <div class="distribution-row">
+      <div class="row-label"><strong>Single Pi baseline</strong><span>mean 215.8s · median 206.8s</span></div>
+      <div class="plot">
+        <i class="marker median" style="left:23.3873%" title="median 206.8s"></i>
+        <i class="marker mean" style="left:27.9114%" title="mean 215.8s"></i>
+        <a class="dot baseline" style="left:4.8978%;top:12px" href="../runs/control/6c1aecbd-994d-42cc-9903-14ed3d67ff2b--20260911T074135Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi baseline: 169.8s; 6c1aecbd"><span>169.8s</span></a><a class="dot baseline" style="left:6.9866%;top:30px" href="../runs/control/4ce86594-ada3-445a-9988-e2b117d56776--20260911T091013Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi baseline: 174.0s; 4ce86594"><span>174.0s</span></a><a class="dot baseline" style="left:10.7021%;top:48px" href="../runs/control/b7cdcc25-3603-4511-bcbb-6ed00c13355c--20260911T090710Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi baseline: 181.4s; b7cdcc25"><span>181.4s</span></a><a class="dot baseline" style="left:14.8722%;top:12px" href="../runs/control/d1164506-16ef-445f-8b83-2958721a2191--20260911T091308Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi baseline: 189.7s; d1164506"><span>189.7s</span></a><a class="dot baseline" style="left:20.5551%;top:30px" href="../runs/control/3cb2a9f6-d395-4750-9037-b89bf8270ba5--20260911T082240Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi baseline: 201.1s; 3cb2a9f6"><span>201.1s</span></a><a class="dot baseline" style="left:26.2194%;top:48px" href="../runs/control/8e523492-0b56-46ba-aea2-d2d39ed7589d--20260911T053126Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi baseline: 212.4s; 8e523492"><span>212.4s</span></a><a class="dot baseline" style="left:29.8800%;top:12px" href="../runs/control/181390ec-f3fd-49b5-8940-2de378696aa0--20260911T090330Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi baseline: 219.8s; 181390ec"><span>219.8s</span></a><a class="dot baseline" style="left:31.4316%;top:30px" href="../runs/control/10f49b8c-f46d-43b7-afb7-ff72b849bff8--20260911T073727Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi baseline: 222.9s; 10f49b8c"><span>222.9s</span></a><a class="dot baseline" style="left:34.6875%;top:48px" href="../runs/control/af1313de-c753-4646-9724-f1ade5a97bd3--20260911T082602Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi baseline: 229.4s; af1313de"><span>229.4s</span></a><a class="dot baseline" style="left:98.8812%;top:12px" href="../runs/control/f8cacd56-b7d9-4a8f-9d2f-31adb9f93f2f--20260911T082952Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi baseline: 357.8s; f8cacd56"><span>357.8s</span></a>
+      </div>
+    </div>
+
+    <div class="distribution-row">
+      <div class="row-label"><strong>SoG concurrent</strong><span>mean 221.8s · median 215.6s</span></div>
+      <div class="plot">
+        <i class="marker median" style="left:27.7905%" title="median 215.6s"></i>
+        <i class="marker mean" style="left:30.8923%" title="mean 221.8s"></i>
+        <a class="dot concurrent" style="left:18.1418%;top:12px" href="../runs/control/f05f0c86-07a0-4601-ae13-642e0e882039--20260911T085736Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 196.3s; f05f0c86"><span>196.3s</span></a><a class="dot concurrent" style="left:20.8110%;top:30px" href="../runs/control/c4e97830-3897-4661-b8cc-a962137cfa3e--20260911T064816Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 201.6s; c4e97830"><span>201.6s</span></a><a class="dot concurrent" style="left:21.1470%;top:48px" href="../runs/control/31883e38-b941-4aef-95b7-365fbaa7c2fb--20260911T085021Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 202.3s; 31883e38"><span>202.3s</span></a><a class="dot concurrent" style="left:24.0699%;top:12px" href="../runs/control/cdbe7dc9-6c96-4fbc-b87d-9f3a2cef2acb--20260911T081518Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 208.1s; cdbe7dc9"><span>208.1s</span></a><a class="dot concurrent" style="left:27.6961%;top:30px" href="../runs/control/842c2b7f-f9cf-468d-8d02-b74e8430646b--20260911T072916Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 215.4s; 842c2b7f"><span>215.4s</span></a><a class="dot concurrent" style="left:27.8848%;top:48px" href="../runs/control/a5ad9b3b-5fc0-4330-b9ac-ec367ecb2c2f--20260911T073335Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 215.8s; a5ad9b3b"><span>215.8s</span></a><a class="dot concurrent" style="left:36.3453%;top:12px" href="../runs/control/20585715-1272-48ef-82e9-b9efd941801d--20260911T081847Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 232.7s; 20585715"><span>232.7s</span></a><a class="dot concurrent" style="left:36.3505%;top:30px" href="../runs/control/ddfefa54-bc04-4e4b-91e0-89f796398926--20260911T085343Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 232.7s; ddfefa54"><span>232.7s</span></a><a class="dot concurrent" style="left:38.2705%;top:48px" href="../runs/control/2b87e1ff-6185-4b0e-a418-54738c168343--20260911T091655Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 236.5s; 2b87e1ff"><span>236.5s</span></a><a class="dot concurrent" style="left:58.2066%;top:12px" href="../runs/control/6bb5e1bc-dc6a-44ff-9785-94353ccf4f2f--20260911T081041Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 276.4s; 6bb5e1bc"><span>276.4s</span></a>
+      </div>
+    </div>
+</section>
+<section><h2>Sorted wall times</h2><p class="note">Each row compares equal ranks in two independent distributions; it does not imply paired executions. Values are Single Pi / SoG concurrent.</p>
+  <div class="axis rank-axis"><span style="left:0.0000%">160s</span><span style="left:10.0000%">180s</span><span style="left:20.0000%">200s</span><span style="left:30.0000%">220s</span><span style="left:40.0000%">240s</span><span style="left:50.0000%">260s</span><span style="left:60.0000%">280s</span><span style="left:70.0000%">300s</span><span style="left:80.0000%">320s</span><span style="left:90.0000%">340s</span><span style="left:100.0000%">360s</span></div>
+  <div class="rank-row">
+              <strong>1</strong>
+              <div class="rank-plot">
+                <i class="connector" style="left:4.8978%;width:13.2440%"></i>
+                <a class="rank-dot baseline" style="left:4.8978%" href="../runs/control/6c1aecbd-994d-42cc-9903-14ed3d67ff2b--20260911T074135Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi: 169.8s; 6c1aecbd"></a>
+                <a class="rank-dot concurrent" style="left:18.1418%" href="../runs/control/f05f0c86-07a0-4601-ae13-642e0e882039--20260911T085736Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 196.3s; f05f0c86"></a>
+              </div>
+              <span>169.8s / 196.3s</span>
+              <em class="slower">+26.5s</em>
+            </div><div class="rank-row">
+              <strong>2</strong>
+              <div class="rank-plot">
+                <i class="connector" style="left:6.9866%;width:13.8244%"></i>
+                <a class="rank-dot baseline" style="left:6.9866%" href="../runs/control/4ce86594-ada3-445a-9988-e2b117d56776--20260911T091013Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi: 174.0s; 4ce86594"></a>
+                <a class="rank-dot concurrent" style="left:20.8110%" href="../runs/control/c4e97830-3897-4661-b8cc-a962137cfa3e--20260911T064816Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 201.6s; c4e97830"></a>
+              </div>
+              <span>174.0s / 201.6s</span>
+              <em class="slower">+27.6s</em>
+            </div><div class="rank-row">
+              <strong>3</strong>
+              <div class="rank-plot">
+                <i class="connector" style="left:10.7021%;width:10.4448%"></i>
+                <a class="rank-dot baseline" style="left:10.7021%" href="../runs/control/b7cdcc25-3603-4511-bcbb-6ed00c13355c--20260911T090710Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi: 181.4s; b7cdcc25"></a>
+                <a class="rank-dot concurrent" style="left:21.1470%" href="../runs/control/31883e38-b941-4aef-95b7-365fbaa7c2fb--20260911T085021Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 202.3s; 31883e38"></a>
+              </div>
+              <span>181.4s / 202.3s</span>
+              <em class="slower">+20.9s</em>
+            </div><div class="rank-row">
+              <strong>4</strong>
+              <div class="rank-plot">
+                <i class="connector" style="left:14.8722%;width:9.1977%"></i>
+                <a class="rank-dot baseline" style="left:14.8722%" href="../runs/control/d1164506-16ef-445f-8b83-2958721a2191--20260911T091308Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi: 189.7s; d1164506"></a>
+                <a class="rank-dot concurrent" style="left:24.0699%" href="../runs/control/cdbe7dc9-6c96-4fbc-b87d-9f3a2cef2acb--20260911T081518Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 208.1s; cdbe7dc9"></a>
+              </div>
+              <span>189.7s / 208.1s</span>
+              <em class="slower">+18.4s</em>
+            </div><div class="rank-row">
+              <strong>5</strong>
+              <div class="rank-plot">
+                <i class="connector" style="left:20.5551%;width:7.1410%"></i>
+                <a class="rank-dot baseline" style="left:20.5551%" href="../runs/control/3cb2a9f6-d395-4750-9037-b89bf8270ba5--20260911T082240Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi: 201.1s; 3cb2a9f6"></a>
+                <a class="rank-dot concurrent" style="left:27.6961%" href="../runs/control/842c2b7f-f9cf-468d-8d02-b74e8430646b--20260911T072916Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 215.4s; 842c2b7f"></a>
+              </div>
+              <span>201.1s / 215.4s</span>
+              <em class="slower">+14.3s</em>
+            </div><div class="rank-row">
+              <strong>6</strong>
+              <div class="rank-plot">
+                <i class="connector" style="left:26.2194%;width:1.6654%"></i>
+                <a class="rank-dot baseline" style="left:26.2194%" href="../runs/control/8e523492-0b56-46ba-aea2-d2d39ed7589d--20260911T053126Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi: 212.4s; 8e523492"></a>
+                <a class="rank-dot concurrent" style="left:27.8848%" href="../runs/control/a5ad9b3b-5fc0-4330-b9ac-ec367ecb2c2f--20260911T073335Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 215.8s; a5ad9b3b"></a>
+              </div>
+              <span>212.4s / 215.8s</span>
+              <em class="slower">+3.3s</em>
+            </div><div class="rank-row">
+              <strong>7</strong>
+              <div class="rank-plot">
+                <i class="connector" style="left:29.8800%;width:6.4653%"></i>
+                <a class="rank-dot baseline" style="left:29.8800%" href="../runs/control/181390ec-f3fd-49b5-8940-2de378696aa0--20260911T090330Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi: 219.8s; 181390ec"></a>
+                <a class="rank-dot concurrent" style="left:36.3453%" href="../runs/control/20585715-1272-48ef-82e9-b9efd941801d--20260911T081847Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 232.7s; 20585715"></a>
+              </div>
+              <span>219.8s / 232.7s</span>
+              <em class="slower">+12.9s</em>
+            </div><div class="rank-row">
+              <strong>8</strong>
+              <div class="rank-plot">
+                <i class="connector" style="left:31.4316%;width:4.9189%"></i>
+                <a class="rank-dot baseline" style="left:31.4316%" href="../runs/control/10f49b8c-f46d-43b7-afb7-ff72b849bff8--20260911T073727Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi: 222.9s; 10f49b8c"></a>
+                <a class="rank-dot concurrent" style="left:36.3505%" href="../runs/control/ddfefa54-bc04-4e4b-91e0-89f796398926--20260911T085343Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 232.7s; ddfefa54"></a>
+              </div>
+              <span>222.9s / 232.7s</span>
+              <em class="slower">+9.8s</em>
+            </div><div class="rank-row">
+              <strong>9</strong>
+              <div class="rank-plot">
+                <i class="connector" style="left:34.6875%;width:3.5830%"></i>
+                <a class="rank-dot baseline" style="left:34.6875%" href="../runs/control/af1313de-c753-4646-9724-f1ade5a97bd3--20260911T082602Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi: 229.4s; af1313de"></a>
+                <a class="rank-dot concurrent" style="left:38.2705%" href="../runs/control/2b87e1ff-6185-4b0e-a418-54738c168343--20260911T091655Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 236.5s; 2b87e1ff"></a>
+              </div>
+              <span>229.4s / 236.5s</span>
+              <em class="slower">+7.2s</em>
+            </div><div class="rank-row">
+              <strong>10</strong>
+              <div class="rank-plot">
+                <i class="connector" style="left:58.2066%;width:40.6746%"></i>
+                <a class="rank-dot baseline" style="left:98.8812%" href="../runs/control/f8cacd56-b7d9-4a8f-9d2f-31adb9f93f2f--20260911T082952Z--port-widget--serial-sog/sog-trace.jsonl" title="Single Pi: 357.8s; f8cacd56"></a>
+                <a class="rank-dot concurrent" style="left:58.2066%" href="../runs/control/6bb5e1bc-dc6a-44ff-9785-94353ccf4f2f--20260911T081041Z--port-widget--concurrent-sog--preload-context/sog-trace.jsonl" title="SoG concurrent: 276.4s; 6bb5e1bc"></a>
+              </div>
+              <span>357.8s / 276.4s</span>
+              <em class="faster">-81.3s</em>
+            </div>
+</section>
+</main></body></html>

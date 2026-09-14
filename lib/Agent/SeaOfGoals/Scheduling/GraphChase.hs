@@ -3,6 +3,7 @@ module Agent.SeaOfGoals.Scheduling.GraphChase
   , ChaseState (..)
   , GoalLaunch (..)
   , completeGoal
+  , completeQueuedGoal
   , initialChaseState
   , nextReadyGoals
   , nextReadyGoalsWith
@@ -113,6 +114,24 @@ completeGoal result state
         appendChaseEvent (ChaseGoalCompleted goalId) $
           state
             { chaseRunning = Set.delete goalId (chaseRunning state)
+            , chaseCompleted = Map.insert goalId result (chaseCompleted state)
+            }
+ where
+  goalId = agentRunResultGoal result
+
+completeQueuedGoal :: AgentRunResult -> ChaseState -> Either Text ChaseState
+completeQueuedGoal result state
+  | goalId `Set.notMember` chaseQueued state =
+      Left "resolved goal was not queued"
+  | goalId `Map.notMember` goalGraphNodes (chaseGraph state) =
+      Left "resolved goal is unknown"
+  | goalId `notElem` fmap goalNodeId (nextReadyGoals state) =
+      Left "resolved goal has unsatisfied dependencies"
+  | otherwise =
+      Right $
+        appendChaseEvent (ChaseGoalCompleted goalId) $
+          state
+            { chaseQueued = Set.delete goalId (chaseQueued state)
             , chaseCompleted = Map.insert goalId result (chaseCompleted state)
             }
  where

@@ -12,6 +12,7 @@ lint:
 test:
 	cabal test
 	python3 -m unittest test-suite/skill-experiments/test_experiment_config.py
+	python3 -m unittest test-suite/skill-experiments/test_plot_goal_phases.py
 
 test-experiment-config:
 	python3 -m unittest test-suite/skill-experiments/test_experiment_config.py

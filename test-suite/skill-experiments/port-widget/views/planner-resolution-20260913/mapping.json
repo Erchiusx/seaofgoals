@@ -1,0 +1,35 @@
+{
+  "title": "port-widget planner resolution: single Pi vs concurrent SOG",
+  "groups": [
+    {
+      "id": "G000-G001",
+      "name": "audit, planning, and validation plan",
+      "baseline_turns": [1, 2, 3, 4, 5],
+      "shared_baseline": true,
+      "concurrent_goals": ["G000", "G001"]
+    },
+    {
+      "id": "G002-G006",
+      "name": "widget implementation and shared wiring",
+      "baseline_turns": [6, 7, 8],
+      "shared_baseline": true,
+      "concurrent_goals": ["G002", "G003", "G004", "G005", "G006"]
+    },
+    {
+      "id": "G007",
+      "name": "final validation and repair",
+      "baseline_turns": [9, 10, 11],
+      "concurrent_goals": ["G007"]
+    }
+  ],
+  "goal_details": {
+    "G000": "runtime planning",
+    "G001": "validation plan resolved by G000",
+    "G002": "InstantSearch.js foundation",
+    "G003": "React flavor",
+    "G004": "Vue flavor",
+    "G005": "connector tests resolved as no-action",
+    "G006": "shared widget tests",
+    "G007": "final validation"
+  }
+}

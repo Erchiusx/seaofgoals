@@ -17,7 +17,9 @@ import Agent.SeaOfGoals.Scheduling.GraphChase
   ( ChaseState (..)
   , GoalLaunch (..)
   , completeGoal
+  , completeQueuedGoal
   , initialChaseState
+  , nextReadyGoals
   , replanForMergeConflict
   , startReadyGoals
   , startReadyGoalsWith
@@ -70,6 +72,7 @@ data ConcurrentChaseResult = ConcurrentChaseResult
   { concurrentChaseCompleted :: Map GoalNodeId AgentRunResult
   , concurrentChaseRunOrder :: [GoalNodeId]
   , concurrentChaseMergeOrder :: [GoalNodeId]
+  , concurrentChaseResolvedOrder :: [GoalNodeId]
   , concurrentChaseReplans :: Int
   , concurrentChaseFinalState :: ChaseState
   }
@@ -97,6 +100,7 @@ runConcurrentChase runner graph
               { concurrentChaseCompleted = chaseCompleted state
               , concurrentChaseRunOrder = runOrder
               , concurrentChaseMergeOrder = mergeOrder
+              , concurrentChaseResolvedOrder = []
               , concurrentChaseReplans = replanCount
               , concurrentChaseFinalState = state
               }
@@ -163,13 +167,14 @@ runConcurrentChaseWithPlanner
   -> GoalGraph
   -> GoalNodeId
   -> (GoalNodeId -> IO Bool)
+  -> (GoalNode -> IO (Maybe AgentRunResult))
   -> IO (Either Text ConcurrentChaseResult)
-runConcurrentChaseWithPlanner runner graph plannerId planReady =
-  loop (initialChaseState graph) [] [] 0 Map.empty
+runConcurrentChaseWithPlanner runner graph plannerId planReady resolveGoal =
+  loop (initialChaseState graph) [] [] [] 0 Map.empty
  where
   allGoals = Map.keysSet (goalGraphNodes graph)
 
-  loop state runOrder mergeOrder replanCount running
+  loop state runOrder mergeOrder resolvedOrder replanCount running
     | Map.keysSet (chaseCompleted state) == allGoals =
         pure
           ( Right
@@ -177,46 +182,83 @@ runConcurrentChaseWithPlanner runner graph plannerId planReady =
                 { concurrentChaseCompleted = chaseCompleted state
                 , concurrentChaseRunOrder = runOrder
                 , concurrentChaseMergeOrder = mergeOrder
+                , concurrentChaseResolvedOrder = resolvedOrder
                 , concurrentChaseReplans = replanCount
                 , concurrentChaseFinalState = state
                 }
           )
     | otherwise = do
-        readyIds <-
-          Set.fromList . fmap fst
-            <$> filterM (fmap snd . planStatus) (Map.toList (goalGraphNodes graph))
-        let (started, launches) =
-              startReadyGoalsWith
-                (`Set.member` readyIds)
-                (concurrentChaseMaxParallelism runner - Map.size running)
-                state
-        newRunning <-
-          foldM
-            ( \acc launch -> do
-                task <- async (concurrentChaseRunGoal runner (goalLaunchNode launch))
-                pure
-                  ( Map.insert
-                      (goalNodeId (goalLaunchNode launch))
-                      (goalLaunchNode launch, task)
-                      acc
-                  )
-            )
-            running
-            launches
-        if Map.null newRunning
+        resolved <- applyAvailableResolutions state resolvedOrder
+        let
+          resolutionState = fst resolved
+          nextResolvedOrder = snd resolved
+        if resolutionState /= state
           then
-            pure
-              (Left "planner chase is blocked by unsatisfied dependencies or missing plans")
+            loop resolutionState runOrder mergeOrder nextResolvedOrder replanCount running
           else do
-            finished <- firstFinished newRunning
-            case finished of
-              Nothing -> do
-                threadDelay 10000
-                loop started runOrder mergeOrder replanCount newRunning
-              Just (node, _task, outcome) ->
-                let remaining = Map.delete (goalNodeId node) newRunning
-                 in processCompleted started runOrder mergeOrder replanCount remaining node outcome
+            readyIds <-
+              Set.fromList . fmap fst
+                <$> filterM (fmap snd . planStatus) (Map.toList (goalGraphNodes graph))
+            let (started, launches) =
+                  startReadyGoalsWith
+                    (`Set.member` readyIds)
+                    (concurrentChaseMaxParallelism runner - Map.size running)
+                    resolutionState
+            newRunning <-
+              foldM
+                ( \acc launch -> do
+                    task <- async (concurrentChaseRunGoal runner (goalLaunchNode launch))
+                    pure
+                      ( Map.insert
+                          (goalNodeId (goalLaunchNode launch))
+                          (goalLaunchNode launch, task)
+                          acc
+                      )
+                )
+                running
+                launches
+            if Map.null newRunning
+              then
+                pure
+                  (Left "planner chase is blocked by unsatisfied dependencies or missing plans")
+              else do
+                finished <- firstFinished newRunning
+                case finished of
+                  Nothing -> do
+                    threadDelay 10000
+                    loop started runOrder mergeOrder nextResolvedOrder replanCount newRunning
+                  Just (node, _task, outcome) ->
+                    let remaining = Map.delete (goalNodeId node) newRunning
+                     in processCompleted
+                          started
+                          runOrder
+                          mergeOrder
+                          nextResolvedOrder
+                          replanCount
+                          remaining
+                          node
+                          outcome
    where
+    applyAvailableResolutions currentState currentResolvedOrder = do
+      (updated, applied) <-
+        foldM applyOne (currentState, []) (nextReadyGoals currentState)
+      if null applied
+        then pure (updated, currentResolvedOrder)
+        else applyAvailableResolutions updated (currentResolvedOrder <> applied)
+     where
+      applyOne (current, applied) node
+        | goalNodeId node == plannerId = pure (current, applied)
+        | goalNodeId node `Set.notMember` chaseQueued current = pure (current, applied)
+        | otherwise = do
+            resolution <- resolveGoal node
+            case resolution of
+              Nothing -> pure (current, applied)
+              Just result ->
+                case completeQueuedGoal result current of
+                  Left err -> fail (Text.unpack err)
+                  Right completed ->
+                    pure (completed, applied <> [goalNodeId node])
+
     planStatus (goalId, _node)
       | goalId == plannerId = pure (goalId, True)
       | otherwise = (goalId,) <$> planReady goalId
@@ -245,59 +287,75 @@ runConcurrentChaseWithPlanner runner graph plannerId planReady =
         [] -> Nothing
         node : _ -> Just (goalNodeId node)
 
-    processCompleted state runOrder mergeOrder replanCount running node outcome =
-      case outcome of
-        Left err -> pure (Left (Text.pack (displayException err)))
-        Right (Left err) -> pure (Left err)
-        Right (Right result)
-          | agentRunResultGoal result /= goalNodeId node ->
-              pure (Left "agent result goal id does not match scheduled goal")
-          | goalNodeId node == plannerId ->
-              case completeGoal result state of
-                Left err -> pure (Left err)
-                Right completed ->
-                  loop
-                    completed
-                    (runOrder <> [goalNodeId node])
-                    mergeOrder
-                    replanCount
-                    running
-          | otherwise -> do
-              merged <- concurrentChaseMergeGoal runner result
-              case merged of
-                Left conflict
-                  | replanCount >= concurrentChaseMaxReplans runner ->
-                      pure (Left "planner chase exceeded max replans")
-                  | otherwise ->
-                      case replanForMergeConflict
-                        (concurrentChaseConflictLeft conflict)
-                        (concurrentChaseConflictRight conflict)
-                        state of
-                        Left err -> pure (Left err)
-                        Right replanned -> do
-                          let cancelled =
-                                Set.difference
-                                  (chaseRunning state)
-                                  (chaseRunning replanned)
-                          mapM_
-                            (\goalId -> maybe (pure ()) (cancel . snd) (Map.lookup goalId running))
-                            (Set.toList cancelled)
-                          loop
-                            replanned
-                            (runOrder <> [goalNodeId node])
-                            mergeOrder
-                            (replanCount + 1)
-                            (Map.withoutKeys running cancelled)
-                Right () ->
-                  case completeGoal result state of
-                    Left err -> pure (Left err)
-                    Right completed ->
-                      loop
-                        completed
-                        (runOrder <> [goalNodeId node])
-                        (mergeOrder <> [goalNodeId node])
-                        replanCount
-                        running
+    processCompleted
+      currentState
+      currentRunOrder
+      currentMergeOrder
+      currentResolvedOrder
+      currentReplanCount
+      currentRunning
+      node
+      outcome =
+        case outcome of
+          Left err -> pure (Left (Text.pack (displayException err)))
+          Right (Left err) -> pure (Left err)
+          Right (Right result)
+            | agentRunResultGoal result /= goalNodeId node ->
+                pure (Left "agent result goal id does not match scheduled goal")
+            | goalNodeId node == plannerId ->
+                case completeGoal result currentState of
+                  Left err -> pure (Left err)
+                  Right completed ->
+                    loop
+                      completed
+                      (currentRunOrder <> [goalNodeId node])
+                      currentMergeOrder
+                      currentResolvedOrder
+                      currentReplanCount
+                      currentRunning
+            | otherwise -> do
+                merged <- concurrentChaseMergeGoal runner result
+                case merged of
+                  Left conflict
+                    | currentReplanCount >= concurrentChaseMaxReplans runner ->
+                        pure (Left "planner chase exceeded max replans")
+                    | otherwise ->
+                        case replanForMergeConflict
+                          (concurrentChaseConflictLeft conflict)
+                          (concurrentChaseConflictRight conflict)
+                          currentState of
+                          Left err -> pure (Left err)
+                          Right replanned -> do
+                            let cancelled =
+                                  Set.difference
+                                    (chaseRunning currentState)
+                                    (chaseRunning replanned)
+                            mapM_
+                              ( \goalId ->
+                                  maybe
+                                    (pure ())
+                                    (cancel . snd)
+                                    (Map.lookup goalId currentRunning)
+                              )
+                              (Set.toList cancelled)
+                            loop
+                              replanned
+                              (currentRunOrder <> [goalNodeId node])
+                              currentMergeOrder
+                              currentResolvedOrder
+                              (currentReplanCount + 1)
+                              (Map.withoutKeys currentRunning cancelled)
+                  Right () ->
+                    case completeGoal result currentState of
+                      Left err -> pure (Left err)
+                      Right completed ->
+                        loop
+                          completed
+                          (currentRunOrder <> [goalNodeId node])
+                          (currentMergeOrder <> [goalNodeId node])
+                          currentResolvedOrder
+                          currentReplanCount
+                          currentRunning
 
 runLaunches
   :: ConcurrentChaseRunner

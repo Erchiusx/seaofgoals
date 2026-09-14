@@ -7,12 +7,17 @@
   "scheduler": "concurrent",
   "workflow": {
     "enabled": true,
-    "graph": "test-suite/skill-experiments/mcp-release-prep-qsv-real/sog.json"
+    "graph": "test-suite/skill-experiments/mcp-release-prep-qsv-real/compiled/qsv-9673f2a-v4-goal-local-context/sog.json"
   },
   "workspace": {
     "backend": "fuse",
     "sandbox": "bwrap",
-    "conflictMode": "file-writes-only"
+    "conflictMode": "file-writes-only",
+    "maskedPaths": [
+      ".claude/skills/mcp-release-prep",
+      ".claude/skills/release-prep"
+    ],
+    "maskedPathGoals": ["G000", "G001", "G002", "G003", "G004", "G005", "G006", "G008"]
   },
   "planning": {
     "incremental": true,
@@ -31,5 +36,5 @@
     "fuseSupport": true
   },
   "runtimeConfig": "seaofgoals.config.json",
-  "skillPath": "/home/erchius/datasets/SSL/docs/testsets/mcp-release-prep/SKILL.md"
+  "skillPath": "test-suite/skill-experiments/mcp-release-prep-qsv-real/compiled/qsv-9673f2a-v4-goal-local-context/runtime-skill-context.md"
 }

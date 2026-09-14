@@ -55,6 +55,7 @@ library
         Agent.SeaOfGoals.Scheduling.Graph
         Agent.SeaOfGoals.Scheduling.GraphChase
         Agent.SeaOfGoals.Scheduling.MergeScheduler
+        Agent.SeaOfGoals.Scheduling.PlannerResolution
         Agent.SeaOfGoals.Scheduling.Replan
         Agent.SeaOfGoals.Scheduling.SerialScheduler
         Agent.SeaOfGoals.Talks
@@ -63,6 +64,7 @@ library
         Agent.SeaOfGoals.Workspace.Bwrap.Command
         Agent.SeaOfGoals.Workspace.Bwrap.Profile
         Agent.SeaOfGoals.Workspace.Bwrap.ToolBinding
+        Agent.SeaOfGoals.Workspace.Bwrap.Visibility
         Agent.SeaOfGoals.Workspace.Containerd.Command
         Agent.SeaOfGoals.Workspace.Backend
         Agent.SeaOfGoals.Workspace.ConflictPolicy

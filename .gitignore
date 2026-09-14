@@ -7,6 +7,10 @@ test-output/
 **/__pycache__/
 *.pyc
 
+# Local interview-slide workspace and its handoff archive.
+docs/slides/interview/
+docs/slides/zeyue_jia_projects_workspace.zip
+
 # Local editor state
 .vscode/
 extensions/*/.vscode/

@@ -7,6 +7,7 @@ import html
 import json
 import re
 from collections import defaultdict
+from pathlib import Path
 
 
 def timestamp(value):
@@ -19,13 +20,14 @@ def command_writes(tool_name, arguments):
     if tool_name != "bash":
         return False
     command = str(arguments.get("command", ""))
+    command_words = re.sub(r"'(?:[^']*)'|\"(?:\\.|[^\"])*\"", "", command)
     return bool(
         re.search(
             r"\b(apply_patch|sed\s+-i|perl\s+-i|tee|mv|cp|rm|mkdir|touch|"
             r"heavy-compile\.mjs\s+(build|test)|package\.mjs|"
             r"npm(?:\s+--[A-Za-z0-9_-]+(?:[= ][^\s;&|]+)?)*\s+(run|test|install)|"
             r"git\s+(apply|checkout|reset))\b",
-            command,
+            command_words,
         )
     )
 
@@ -169,16 +171,10 @@ def render(data, output):
         y = 48 + index * row
         lines.append(f'<text x="{left-12}" y="{y+17}" text-anchor="end" class="label">{html.escape(goal)}</text>')
         lines.append(f'<line x1="{left}" y1="{y+12}" x2="{width-24}" y2="{y+12}" class="grid"/>')
-        grouped = {}
-        first = min(begin for _, begin, _ in data[goal])
-        for phase, begin, end in data[goal]:
-            grouped[phase] = grouped.get(phase, 0) + (end - begin).total_seconds()
-        cursor = first
-        for phase in ("model_wait", "reasoning", "generation", "read", "write", "end_goal"):
-            duration = grouped.get(phase, 0)
-            if not duration:
+        for phase, begin, end in sorted(data[goal], key=lambda item: item[1]):
+            duration = (end - begin).total_seconds()
+            if duration <= 0:
                 continue
-            begin, end = cursor, cursor + datetime.timedelta(seconds=duration)
             begin_x, end_x = x(begin), x(end)
             bar_width = max(end_x - begin_x, 2)
             offset_begin = (begin - start).total_seconds()
@@ -187,7 +183,6 @@ def render(data, output):
             lines.append(f'<rect x="{begin_x:.2f}" y="{y}" width="{bar_width:.2f}" height="24" fill="{colors[phase]}"><title>{tooltip}</title></rect>')
             if bar_width >= 72:
                 lines.append(f'<text x="{begin_x + bar_width / 2:.2f}" y="{y + 17}" text-anchor="middle" fill="white">{duration:.1f}s</text>')
-            cursor = end
     axis_y = 48 + row * len(goals) + 8
     plot_width = width - left - 24
     for fraction in (0, 0.25, 0.5, 0.75, 1):
@@ -209,9 +204,9 @@ def render(data, output):
 <title>Goal phase coverage</title>
 <style>body{margin:0;background:#fff}svg{display:block;margin:16px auto;max-width:100%;height:auto}</style>
 """ + svg
-        open(output, "w", encoding="utf-8").write(document)
+        Path(output).write_text(document, encoding="utf-8")
     else:
-        open(output, "w", encoding="utf-8").write(svg)
+        Path(output).write_text(svg, encoding="utf-8")
 
 
 def main():

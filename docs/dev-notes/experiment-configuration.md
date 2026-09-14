@@ -40,7 +40,9 @@ The version 1 shape is:
   "workspace": {
     "backend": "fuse",
     "sandbox": "bwrap",
-    "conflictMode": "strict"
+    "conflictMode": "strict",
+    "maskedPaths": ["path/to/embedded/instructions"],
+    "maskedPathGoals": ["G000", "G001"]
   },
   "planning": {
     "incremental": true,
@@ -74,6 +76,13 @@ experiment settings.
 `workspace.conflictMode` is either `strict` or `file-writes-only`. The latter
 only removes pure directory writes from conflict comparison; regular-file
 write/read conflicts remain conflicts.
+
+`workspace.maskedPaths` contains workspace-relative directories that bwrap
+overlays with read-only empty directories. `workspace.maskedPathGoals` limits
+the overlay to selected Pi goal processes; an empty goal list applies the mask
+to every goal. This allows an experiment to keep embedded instruction sources
+in the real fixture for build or package commands without exposing those
+sources to planner or editing agents. Paths must remain inside `/workspace`.
 
 ## Credentials And Provenance
 
