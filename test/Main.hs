@@ -101,6 +101,7 @@ import Agent.SeaOfGoals.Scheduling.SerialScheduler
   , readyGoalNodes
   , runSerialScheduler
   )
+import Agent.SeaOfGoals.Scheduling.SpeculativeChase qualified as Speculative
 import Agent.SeaOfGoals.Tools
   ( ToolSpec
   , objectToolSpec
@@ -250,6 +251,7 @@ main = do
   concurrentChaseSchedulerTest
   plannerChaseSchedulerTest
   serialSchedulerTest
+  speculativeChaseSchedulerTest
   sandboxedToolCallTest
   eventsRef <- newIORef []
   provider <- newFakeProvider fakeResponses
@@ -1048,6 +1050,11 @@ fuseStoreWorkspaceTest = do
   assertBool "workspace stores created file locally" localCreated
 
   accesses <- FuseStore.accessLog handle
+  let accessCursor = length accesses
+  FuseStore.writeFile handle "README.md" "updated\n"
+  (nextCursor, newAccesses) <- FuseStore.accessLogSince accessCursor handle
+  assertEqual "incremental access cursor advances after a new operation" (accessCursor + 1) nextCursor
+  assertEqual "incremental access log excludes prior rounds" [FileModified "README.md"] newAccesses
   assertEqual
     "workspace read set records content reads"
     ( Set.fromList
@@ -1762,6 +1769,49 @@ serialSchedulerTest = do
     Left "agent result goal id does not match scheduled goal" -> pure ()
     Left err -> fail ("unexpected serial scheduler mismatch error: " <> Text.unpack err)
     Right summary -> fail ("expected serial scheduler mismatch failure, got " <> show summary)
+
+speculativeChaseSchedulerTest :: IO ()
+speculativeChaseSchedulerTest = do
+  let
+    s1 = goalId "S1"
+    s2 = goalId "S2"
+    initial = Speculative.initialSpeculativeState [schedulerGoal "S1" 1, schedulerGoal "S2" 2]
+    s1Writes = Speculative.EffectSet Set.empty (Set.singleton "generated.txt")
+    s2Reads = Speculative.EffectSet (Set.singleton "generated.txt") Set.empty
+    (afterS1Effects, initialAborts) = Speculative.recordEffects s1 s1Writes initial
+    (afterS2Effects, aborted) = Speculative.recordEffects s2 s2Reads afterS1Effects
+
+  assertEqual "a goal's own first writes do not abort later goals without observed effects" [] initialAborts
+  assertEqual "an earlier write invalidates a later reader" [s2] aborted
+  assertEqual
+    "conflicting later goal is aborted"
+    (Just (Speculative.SpeculativeAborted (Speculative.GoalEpoch 0)))
+    (Map.lookup s2 (Speculative.speculativeGoalStatus afterS2Effects))
+
+  let
+    (afterS1Finish, committed) = Speculative.finishGoal s1 afterS2Effects
+    restartedS2 = Speculative.restartGoal s2 afterS1Finish
+    (afterRebasedRead, rebasedAborts) = Speculative.recordEffects s2 s2Reads restartedS2
+
+  assertEqual "the finished prefix is committed in serial order" [s1] committed
+  assertEqual
+    "restart moves the goal to a new epoch"
+    (Just (Speculative.SpeculativeRunning (Speculative.GoalEpoch 1)))
+    (Map.lookup s2 (Speculative.speculativeGoalStatus restartedS2))
+  assertEqual "a restarted goal reads from its committed base without being aborted again" [] rebasedAborts
+  assertEqual
+    "rebased read remains running"
+    (Just (Speculative.SpeculativeRunning (Speculative.GoalEpoch 1)))
+    (Map.lookup s2 (Speculative.speculativeGoalStatus afterRebasedRead))
+
+  let
+    reverseInitial = Speculative.initialSpeculativeState [schedulerGoal "S1" 1, schedulerGoal "S2" 2]
+    s1Reads = Speculative.EffectSet (Set.singleton "config.json") Set.empty
+    s2Writes = Speculative.EffectSet Set.empty (Set.singleton "config.json")
+    (afterEarlyRead, _) = Speculative.recordEffects s1 s1Reads reverseInitial
+    (_, reverseAborts) = Speculative.recordEffects s2 s2Writes afterEarlyRead
+
+  assertEqual "an earlier read and later write is not an invalidating conflict" [] reverseAborts
 
 sandboxedToolCallTest :: IO ()
 sandboxedToolCallTest = do

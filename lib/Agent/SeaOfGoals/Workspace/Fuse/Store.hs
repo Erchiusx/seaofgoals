@@ -18,6 +18,7 @@ module Agent.SeaOfGoals.Workspace.Fuse.Store
   , truncateFile
   , accessConflict
   , accessLog
+  , accessLogSince
   , readSet
   , writeSet
   , writeFile
@@ -387,6 +388,14 @@ localPath handle path = localFilePath handle <$> normalizePath path
 accessLog :: Handle -> IO [Access]
 accessLog handle =
   reverse <$> readIORef (handleAccesses handle)
+
+-- | Return the accesses recorded after a previously returned cursor, together
+-- with the cursor for the next poll. This lets a process supervisor feed
+-- effects to a scheduler at tool-call boundaries without rereading old rounds.
+accessLogSince :: Int -> Handle -> IO (Int, [Access])
+accessLogSince cursor handle = do
+  accesses <- accessLog handle
+  pure (length accesses, drop cursor accesses)
 
 readSet :: [Access] -> Set FilePath
 readSet =

@@ -58,6 +58,7 @@ library
         Agent.SeaOfGoals.Scheduling.PlannerResolution
         Agent.SeaOfGoals.Scheduling.Replan
         Agent.SeaOfGoals.Scheduling.SerialScheduler
+        Agent.SeaOfGoals.Scheduling.SpeculativeChase
         Agent.SeaOfGoals.Talks
         Agent.SeaOfGoals.Tools
         Agent.SeaOfGoals.Trace
