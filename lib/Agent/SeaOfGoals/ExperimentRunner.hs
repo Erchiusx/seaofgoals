@@ -101,6 +101,8 @@ import Agent.SeaOfGoals.Scheduling.SerialScheduler
   , goalPredecessors
   , runSerialScheduler
   )
+import Agent.SeaOfGoals.Scheduling.SpeculativeChase (EffectSet (..))
+import Agent.SeaOfGoals.Scheduling.SpeculativeRunner qualified as SpeculativeRunner
 import Agent.SeaOfGoals.Tools
   ( ToolSpec
   , objectToolSpec
@@ -530,6 +532,13 @@ runSerialPromptWithGraph context compiledGraph = do
 
 runConcurrentPromptWithGraph :: ExperimentContext -> CompiledGoalGraph -> IO ()
 runConcurrentPromptWithGraph context compiledGraph = do
+  speculativeOrdered <- loadOrderedSpeculativeChase
+  if speculativeOrdered
+    then runOrderedSpeculativePromptWithGraph context compiledGraph
+    else runConcurrentPromptWithGraphLegacy context compiledGraph
+
+runConcurrentPromptWithGraphLegacy :: ExperimentContext -> CompiledGoalGraph -> IO ()
+runConcurrentPromptWithGraphLegacy context compiledGraph = do
   requireConcurrentWorkspaceRemap
   incrementalPlanner <- loadIncrementalPlanner
   let
@@ -572,6 +581,7 @@ runConcurrentPromptWithGraph context compiledGraph = do
                     acceptedGenerationRef
                     runBaseGenerationsRef
                     runsRef
+                    (const (pure ()))
               , concurrentChaseMergeGoal =
                   mergeConcurrentGoal
                     context
@@ -607,6 +617,7 @@ runConcurrentPromptWithGraph context compiledGraph = do
                     acceptedGenerationRef
                     runBaseGenerationsRef
                     runsRef
+                    (const (pure ()))
               , concurrentChaseMergeGoal =
                   mergeConcurrentGoal
                     context
@@ -634,9 +645,89 @@ runConcurrentPromptWithGraph context compiledGraph = do
         )
       putStrLn ("Trace written to " <> experimentTracePath context)
 
+runOrderedSpeculativePromptWithGraph :: ExperimentContext -> CompiledGoalGraph -> IO ()
+runOrderedSpeculativePromptWithGraph context compiledGraph = do
+  requireConcurrentWorkspaceRemap
+  when (experimentAgentRunner context /= PiAgentRunner) $
+    fail "SOG_SPECULATIVE_ORDERED=1 requires SOG_AGENT_RUNNER=pi"
+  when (experimentConcurrentWorkspaceMode context /= FuseEventWorkspace) $
+    fail "SOG_SPECULATIVE_ORDERED=1 requires SOG_CONCURRENT_WORKSPACE=fuse"
+  let goalGraph = compiledGraphToGoalGraph compiledGraph
+  unless (Set.null (goalGraphEdges goalGraph)) $
+    fail "SOG_SPECULATIVE_ORDERED=1 requires a compiled graph with no predecessor edges"
+  workspaceRoot <- normalise <$> getCurrentDirectory
+  recordDagSnapshot
+    context
+    "speculative_initial"
+    (Just "all goals launched from the initial workspace")
+    (initialChaseState goalGraph)
+  summariesRef <- newSummaries
+  acceptedHistoriesRef <- newCodexHistories
+  pendingHistoriesRef <- newCodexHistories
+  harnessHistoriesRef <- newGoalHistories
+  runsRef <- newIORef Map.empty
+  acceptedEffectsRef <- newIORef []
+  acceptedGenerationRef <- newIORef 0
+  runBaseGenerationsRef <- newIORef Map.empty
+  result <-
+    SpeculativeRunner.runSpeculativeChase
+      SpeculativeRunner.SpeculativeChaseRunner
+        { SpeculativeRunner.speculativeChaseRunGoal =
+            \node _epoch reportEffects ->
+              runConcurrentGoal
+                context
+                goalGraph
+                workspaceRoot
+                summariesRef
+                acceptedHistoriesRef
+                pendingHistoriesRef
+                harnessHistoriesRef
+                acceptedGenerationRef
+                runBaseGenerationsRef
+                runsRef
+                reportEffects
+                node
+        , SpeculativeRunner.speculativeChaseMergeGoal =
+            \agentResult -> do
+              mergeResult <-
+                mergeConcurrentGoal
+                  context
+                  goalGraph
+                  workspaceRoot
+                  summariesRef
+                  acceptedHistoriesRef
+                  pendingHistoriesRef
+                  acceptedEffectsRef
+                  acceptedGenerationRef
+                  runBaseGenerationsRef
+                  agentResult
+              pure $
+                case mergeResult of
+                  Left conflict -> Left (concurrentChaseConflictReason conflict)
+                  Right () -> Right ()
+        }
+      (Map.elems (goalGraphNodes goalGraph))
+  case result of
+    Left err -> fail ("ordered speculative scheduler failed: " <> Text.unpack err)
+    Right summary -> do
+      putStrLn
+        ( "Ordered speculative goals completed: "
+            <> show (Text.unpack . unGoalNodeId <$> SpeculativeRunner.speculativeChaseCommitOrder summary)
+        )
+      putStrLn
+        ( "Restarted epochs: "
+            <> show (Text.unpack . unGoalNodeId <$> SpeculativeRunner.speculativeChaseRestarted summary)
+        )
+      putStrLn ("Trace written to " <> experimentTracePath context)
+
 loadIncrementalPlanner :: IO Bool
 loadIncrementalPlanner = do
   value <- lookupEnv "SOG_INCREMENTAL_PLANNER"
+  pure (value `elem` [Just "1", Just "true", Just "yes"])
+
+loadOrderedSpeculativeChase :: IO Bool
+loadOrderedSpeculativeChase = do
+  value <- lookupEnv "SOG_SPECULATIVE_ORDERED"
   pure (value `elem` [Just "1", Just "true", Just "yes"])
 
 detachPlannerEdges :: Text -> GoalGraph -> GoalGraph
@@ -1382,6 +1473,7 @@ runConcurrentGoal
   -> IORef Int
   -> IORef (Map GoalNodeId Int)
   -> IORef (Map GoalNodeId Int)
+  -> (EffectSet -> IO ())
   -> GoalNode
   -> IO (Either Text AgentRunResult)
 runConcurrentGoal
@@ -1395,6 +1487,7 @@ runConcurrentGoal
   acceptedGenerationRef
   runBaseGenerationsRef
   runsRef
+  reportEffects
   node = do
     recordGraphSnapshot
       context
@@ -1503,6 +1596,7 @@ runConcurrentGoal
               node
               prompt
               harnessPredecessorHistory
+              reportEffects
 
 runConcurrentHarnessGoal
   :: ExperimentContext
@@ -1778,9 +1872,10 @@ runConcurrentPiGoalWithFuse
   -> GoalNode
   -> Text
   -> [LLMInputItem]
+  -> (EffectSet -> IO ())
   -> IO (Either Text AgentRunResult)
 #ifdef SOG_FUSE
-runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecessorHistory = do
+runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecessorHistory reportEffects = do
   resetDirectory runRoot
   let
     storeRoot = runRoot </> "store"
@@ -1814,7 +1909,7 @@ runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecesso
               ( \event -> do
                   experimentEventSink context event
                   recordPiPlanPublication context controlRoot event
-                  recordPiFuseEffects context taskId accessCursor handle event
+                  recordPiFuseEffects context taskId accessCursor handle reportEffects event
               )
               (Just taskId)
               (WorkspaceBackend.mountHostPath mountValue)
@@ -1825,7 +1920,7 @@ runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecesso
               )
           pure (result, preloadedGoalContextReads preloaded)
       )
-  flushPiFuseEffects context taskId accessCursor handle
+  flushPiFuseEffects context taskId accessCursor handle reportEffects
   accessLog <- filterWorkspaceAccesses <$> FuseStore.accessLog handle
   let
     status = piGoalStatus piResult
@@ -1849,7 +1944,7 @@ runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecesso
     then pure (Right result)
     else pure (Left ("concurrent pi goal failed: " <> status))
 #else
-runConcurrentPiGoalWithFuse _ _ _ _ _ _ =
+runConcurrentPiGoalWithFuse _ _ _ _ _ _ _ =
   pure (Left "SOG_CONCURRENT_WORKSPACE=fuse requires building SeaOfGoals with -f fuse")
 #endif
 
@@ -1884,11 +1979,12 @@ recordPiFuseEffects
   -> Text
   -> IORef Int
   -> FuseStore.Handle
+  -> (EffectSet -> IO ())
   -> HarnessEvent
   -> IO ()
-recordPiFuseEffects context taskId cursor handle event =
+recordPiFuseEffects context taskId cursor handle reportEffects event =
   case event of
-    ToolResultObserved{} -> flushPiFuseEffects context taskId cursor handle
+    ToolResultObserved{} -> flushPiFuseEffects context taskId cursor handle reportEffects
     _ -> pure ()
 
 flushPiFuseEffects
@@ -1896,12 +1992,19 @@ flushPiFuseEffects
   -> Text
   -> IORef Int
   -> FuseStore.Handle
+  -> (EffectSet -> IO ())
   -> IO ()
-flushPiFuseEffects context taskId cursor handle = do
+flushPiFuseEffects context taskId cursor handle reportEffects = do
   previousCursor <- readIORef cursor
   (nextCursor, accesses) <- FuseStore.accessLogSince previousCursor handle
   writeIORef cursor nextCursor
-  forM_ (filterWorkspaceAccesses accesses) $ \access ->
+  let workspaceAccesses = filterWorkspaceAccesses accesses
+  reportEffects
+    EffectSet
+      { effectReads = FuseStore.readSet workspaceAccesses
+      , effectWrites = FuseStore.writeSet workspaceAccesses
+      }
+  forM_ workspaceAccesses $ \access ->
     experimentEventSink context $
       EffectRecorded
         (fuseAccessEffect access)

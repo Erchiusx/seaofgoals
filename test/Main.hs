@@ -104,6 +104,7 @@ import Agent.SeaOfGoals.Scheduling.SerialScheduler
   , runSerialScheduler
   )
 import Agent.SeaOfGoals.Scheduling.SpeculativeChase qualified as Speculative
+import Agent.SeaOfGoals.Scheduling.SpeculativeRunner qualified as SpeculativeRunner
 import Agent.SeaOfGoals.Tools
   ( ToolSpec
   , objectToolSpec
@@ -180,7 +181,11 @@ import Agent.SeaOfGoals.Workspace.ToolRunner.Sandboxed
   , parseCommandToolCall
   )
 import Control.Concurrent
-  ( threadDelay
+  ( forkIO
+  , newEmptyMVar
+  , putMVar
+  , takeMVar
+  , threadDelay
   )
 import Control.Monad (when)
 import Data.Aeson
@@ -254,6 +259,7 @@ main = do
   plannerChaseSchedulerTest
   serialSchedulerTest
   speculativeChaseSchedulerTest
+  speculativeRunnerTest
   sandboxedToolCallTest
   eventsRef <- newIORef []
   provider <- newFakeProvider fakeResponses
@@ -1821,6 +1827,44 @@ speculativeChaseSchedulerTest = do
     (_, reverseAborts) = Speculative.recordEffects s2 s2Writes afterEarlyRead
 
   assertEqual "an earlier read and later write is not an invalidating conflict" [] reverseAborts
+
+speculativeRunnerTest :: IO ()
+speculativeRunnerTest = do
+  s1Ready <- newEmptyMVar
+  allowS1Finish <- newEmptyMVar
+  s2Epochs <- newIORef []
+  _ <-
+    forkIO $ do
+      takeMVar s1Ready
+      threadDelay 100000
+      putMVar allowS1Finish ()
+  result <-
+    SpeculativeRunner.runSpeculativeChase
+      SpeculativeRunner.SpeculativeChaseRunner
+        { SpeculativeRunner.speculativeChaseRunGoal =
+            \node epoch report ->
+              case goalNodeId node of
+                goal | goal == goalId "S1" -> do
+                  report (Speculative.EffectSet Set.empty (Set.singleton "generated.txt"))
+                  putMVar s1Ready ()
+                  takeMVar allowS1Finish
+                  pure (Right (fakeAgentRunResult node))
+                _ -> do
+                  modifyIORef' s2Epochs (<> [epoch])
+                  report (Speculative.EffectSet (Set.singleton "generated.txt") Set.empty)
+                  if epoch == Speculative.GoalEpoch 0
+                    then threadDelay 10000000 >> pure (Right (fakeAgentRunResult node))
+                    else pure (Right (fakeAgentRunResult node))
+        , SpeculativeRunner.speculativeChaseMergeGoal = \_ -> pure (Right ())
+        }
+      [schedulerGoal "S1" 1, schedulerGoal "S2" 2]
+  case result of
+    Left err -> fail ("expected speculative runner success, got " <> Text.unpack err)
+    Right summary -> do
+      assertEqual "speculative runner commits in source order" [goalId "S1", goalId "S2"] (SpeculativeRunner.speculativeChaseCommitOrder summary)
+      assertEqual "conflicting later goal is restarted after the prefix commits" [goalId "S2"] (SpeculativeRunner.speculativeChaseRestarted summary)
+  observedEpochs <- readIORef s2Epochs
+  assertEqual "restarted goal receives the rebased epoch" [Speculative.GoalEpoch 0, Speculative.GoalEpoch 1] observedEpochs
 
 sandboxedToolCallTest :: IO ()
 sandboxedToolCallTest = do
