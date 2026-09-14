@@ -1,7 +1,9 @@
 module Agent.SeaOfGoals.Compile.Compiler
   ( CompiledGoal (..)
   , CompiledGoalGraph (..)
+  , CompilerStrategy (..)
   , compileSkill
+  , compilerCodexPromptForStrategy
   , compilerCodexPrompt
   , compilerCodexPromptWithPreloadPlanner
   , parseCompiledGoalGraphText
@@ -65,6 +67,11 @@ data CompiledGoal = CompiledGoal
   }
   deriving stock (Eq, Show)
 
+data CompilerStrategy
+  = DagCompilerStrategy
+  | OrderedSpeculativeCompilerStrategy
+  deriving stock (Eq, Show)
+
 instance ToJSON CompiledGoal where
   toJSON goal =
     object
@@ -125,11 +132,12 @@ runCompiler skillPath outputPath maybeSkillName = do
   model <- Text.pack . fromMaybe "gpt-5.5" <$> lookupEnv "SOG_MODEL"
   endpoint <- loadGPTEndpointFromEnv
   insertPreloadPlanner <- loadCompilerPreloadPlanner
+  strategy <- loadCompilerStrategy
   let skillName = fromMaybe "skill" maybeSkillName
   result <-
     case runner of
       Just "codex" ->
-        compileSkillWithCodex insertPreloadPlanner skillName skillText
+        compileSkillWithCodex strategy insertPreloadPlanner skillName skillText
       _ ->
         case apiKey of
           Nothing -> do
@@ -141,7 +149,7 @@ runCompiler skillPath outputPath maybeSkillName = do
                     { gptApiKey = key
                     , gptEndpoint = endpoint
                     }
-            compileSkill backend model skillName skillText
+            compileSkillWithStrategy backend model strategy skillName skillText
   case result of
     Left err -> do
       putStrLn ("Could not compile skill: " <> Text.unpack err)
@@ -152,12 +160,12 @@ runCompiler skillPath outputPath maybeSkillName = do
       putStrLn ("Compiled goals written to " <> outputPath)
 
 compileSkillWithCodex
-  :: Bool -> Text -> Text -> IO (Either Text CompiledGoalGraph)
-compileSkillWithCodex insertPreloadPlanner skillName skillText = do
+  :: CompilerStrategy -> Bool -> Text -> Text -> IO (Either Text CompiledGoalGraph)
+compileSkillWithCodex strategy insertPreloadPlanner skillName skillText = do
   config <- loadCodexProcessConfigFromEnv
   workspace <- compilerCodexWorkspace skillName
   let prompt =
-        compilerCodexPromptWithPreloadPlanner insertPreloadPlanner skillName skillText
+        compilerCodexPromptForStrategy strategy insertPreloadPlanner skillName skillText
   result <- runCodexProcess config (\_event -> pure ()) Nothing workspace prompt
   if codexProcessTimedOut result
     then pure (Left "codex compiler run timed out")
@@ -201,15 +209,19 @@ compilerCodexWorkspace skillName = do
 
 compilerCodexPrompt :: Text -> Text -> Text
 compilerCodexPrompt skillName skillText =
-  compilerCodexPromptWithPreloadPlanner False skillName skillText
+  compilerCodexPromptForStrategy DagCompilerStrategy False skillName skillText
 
 compilerCodexPromptWithPreloadPlanner :: Bool -> Text -> Text -> Text
 compilerCodexPromptWithPreloadPlanner insertPreloadPlanner skillName skillText =
+  compilerCodexPromptForStrategy DagCompilerStrategy insertPreloadPlanner skillName skillText
+
+compilerCodexPromptForStrategy :: CompilerStrategy -> Bool -> Text -> Text -> Text
+compilerCodexPromptForStrategy strategy insertPreloadPlanner skillName skillText =
   Text.replace "{{user_prompt}}" (compilerUserPrompt skillName skillText)
     . Text.replace
       "{{preload_instructions}}"
       (compilerPreloadPlannerInstructions insertPreloadPlanner)
-    . Text.replace "{{system_prompt}}" compilerSystemPrompt
+    . Text.replace "{{system_prompt}}" (compilerSystemPrompt <> compilerStrategyInstructions strategy)
     $ $(embedTextFile "lib/Agent/SeaOfGoals/Prompts/compiler-codex-prompt.txt")
 
 compileSkill
@@ -220,6 +232,17 @@ compileSkill
   -> Text
   -> IO (Either Text CompiledGoalGraph)
 compileSkill provider model skillName skillText = do
+  compileSkillWithStrategy provider model DagCompilerStrategy skillName skillText
+
+compileSkillWithStrategy
+  :: LLM.LLM provider
+  => provider
+  -> Text
+  -> CompilerStrategy
+  -> Text
+  -> Text
+  -> IO (Either Text CompiledGoalGraph)
+compileSkillWithStrategy provider model strategy skillName skillText = do
   insertPreloadPlanner <- loadCompilerPreloadPlanner
   result <-
     LLM.runLLM
@@ -233,6 +256,7 @@ compileSkill provider model skillName skillText = do
                   , messageContent =
                       [ TextPart
                           ( compilerSystemPrompt
+                              <> compilerStrategyInstructions strategy
                               <> compilerPreloadPlannerInstructions insertPreloadPlanner
                           )
                       ]
@@ -466,6 +490,20 @@ hasCycle graph =
 compilerSystemPrompt :: Text
 compilerSystemPrompt =
   $(embedTextFile "lib/Agent/SeaOfGoals/Prompts/compiler-system.txt")
+
+compilerStrategyInstructions :: CompilerStrategy -> Text
+compilerStrategyInstructions DagCompilerStrategy = ""
+compilerStrategyInstructions OrderedSpeculativeCompilerStrategy =
+  "\n\nThe runtime will launch every compiled goal immediately from the same initial workspace and commit them in list order. The list order is therefore the only execution order: make it a deliberate serial decomposition. Emit no predecessor edges. Each goal must describe a narrow, restart-safe slice of work and may be re-run after the earlier list prefix has been committed. Do not rely on predecessor summaries or a predecessor-produced workspace state at initial launch; later goals must inspect what they need themselves. Keep cross-goal file ownership as disjoint as practical, and put unavoidable integration or validation after the writers."
+
+loadCompilerStrategy :: IO CompilerStrategy
+loadCompilerStrategy = do
+  value <- lookupEnv "SOG_COMPILER_STRATEGY"
+  case Text.toLower . Text.pack <$> value of
+    Nothing -> pure DagCompilerStrategy
+    Just "dag" -> pure DagCompilerStrategy
+    Just "ordered-speculative" -> pure OrderedSpeculativeCompilerStrategy
+    Just other -> fail ("unknown SOG_COMPILER_STRATEGY: " <> Text.unpack other)
 
 compilerUserPrompt :: Text -> Text -> Text
 compilerUserPrompt skillName skillText =

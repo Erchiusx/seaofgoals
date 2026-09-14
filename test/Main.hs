@@ -12,6 +12,8 @@ import Agent.SeaOfGoals.CodexProcess
 import Agent.SeaOfGoals.Compile.Compiler
   ( CompiledGoal (..)
   , CompiledGoalGraph (..)
+  , CompilerStrategy (OrderedSpeculativeCompilerStrategy)
+  , compilerCodexPromptForStrategy
   , compilerCodexPromptWithPreloadPlanner
   , validateCompiledGoalGraph
   )
@@ -449,6 +451,13 @@ compilerPreloadPlannerPromptTest = do
   assertBool
     "compiler preload planner prompt names goal resolution tool"
     ("set_goal_resolution" `Text.isInfixOf` prompt)
+  let speculativePrompt = compilerCodexPromptForStrategy OrderedSpeculativeCompilerStrategy False "demo" "raw skill"
+  assertBool
+    "ordered speculative compiler prompt makes list order canonical"
+    ("only execution order" `Text.isInfixOf` speculativePrompt)
+  assertBool
+    "ordered speculative compiler prompt forbids DAG predecessors"
+    ("Emit no predecessor edges" `Text.isInfixOf` speculativePrompt)
 
 plannerResolutionParsingTest :: IO ()
 plannerResolutionParsingTest = do
