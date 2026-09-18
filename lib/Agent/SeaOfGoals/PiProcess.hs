@@ -5,6 +5,7 @@ module Agent.SeaOfGoals.PiProcess
   , loadPiProcessConfigFromEnv
   , runPiProcess
   , runPiSdkProcess
+  , runPiSdkProcessWithAbortFile
   , piExpectedVersion
   )
 where
@@ -212,7 +213,23 @@ runPiSdkProcess
   -> Text
   -> [LLMInputItem]
   -> IO PiProcessResult
-runPiSdkProcess config eventSink goalId workspace controlRoot prompt history = do
+runPiSdkProcess config eventSink goalId workspace controlRoot prompt history =
+  runPiSdkProcessWithAbortFile config eventSink goalId workspace controlRoot prompt history Nothing
+
+-- | An abort file is a host-to-bridge control channel.  The SDK runner turns
+-- its appearance into 'session.abort', which stops an active tool subprocess
+-- without the harness killing the outer Node/Pi process.
+runPiSdkProcessWithAbortFile
+  :: PiProcessConfig
+  -> (HarnessEvent -> IO ())
+  -> Maybe Text
+  -> FilePath
+  -> FilePath
+  -> Text
+  -> [LLMInputItem]
+  -> Maybe FilePath
+  -> IO PiProcessResult
+runPiSdkProcessWithAbortFile config eventSink goalId workspace controlRoot prompt history maybeAbortFile = do
   versionCheck <- ensurePiVersion config
   case versionCheck of
     Left message -> pure (sdkFailure message)
@@ -223,13 +240,15 @@ runPiSdkProcess config eventSink goalId workspace controlRoot prompt history = d
       requestPath = controlRoot </> "pi-sdk-request.json"
       request =
         object
-          [ "cwd" .= ("/workspace" :: Text)
-          , "goalId" .= goalId
-          , "agentDir" .= ("/pi-agent" :: Text)
-          , "prompt" .= prompt
-          , "model" .= piProcessModel config
-          , "messages" .= fmap piMessage (filter isPiHistoryItem history)
-          ]
+          ( [ "cwd" .= ("/workspace" :: Text)
+            , "goalId" .= goalId
+            , "agentDir" .= ("/pi-agent" :: Text)
+            , "prompt" .= prompt
+            , "model" .= piProcessModel config
+            , "messages" .= fmap piMessage (filter isPiHistoryItem history)
+            ]
+              <> maybe [] (pure . ("abortFile" .=)) maybeAbortFile
+          )
     createDirectoryIfMissing True controlRoot
     createDirectoryIfMissing True (controlRoot </> "pi-agent")
     LazyByteString.writeFile requestPath (Aeson.encode request)

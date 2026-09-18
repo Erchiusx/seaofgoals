@@ -9,6 +9,7 @@ import Agent.SeaOfGoals.Scheduling.Agentic
   ( AgentRunResult (..)
   , GoalNode (..)
   , GoalNodeId
+  , unGoalNodeId
   )
 import Agent.SeaOfGoals.Scheduling.SpeculativeChase
   ( EffectSet
@@ -36,7 +37,8 @@ import Control.Concurrent.MVar
   , takeMVar
   )
 import Control.Exception (displayException)
-import Control.Monad (forM, forM_, unless)
+import Control.Monad (forM, forM_, join, unless, when)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (find)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -48,6 +50,7 @@ data SpeculativeChaseRunner = SpeculativeChaseRunner
       :: GoalNode
       -> GoalEpoch
       -> (EffectSet -> IO ())
+      -> (IO () -> IO ())
       -> IO (Either Text AgentRunResult)
   , speculativeChaseMergeGoal :: AgentRunResult -> IO (Either Text ())
   }
@@ -62,6 +65,7 @@ data SpeculativeChaseResult = SpeculativeChaseResult
 data ActiveGoal = ActiveGoal
   { activeGoalEpoch :: GoalEpoch
   , activeGoalTask :: Async (Either Text AgentRunResult)
+  , activeGoalAbort :: IO ()
   }
 
 data Runtime = Runtime
@@ -103,7 +107,7 @@ runSpeculativeChase runner nodes = do
           _ -> pure (current, [])
     forM_ aborted $ \laterGoal -> do
       maybeTask <- Map.lookup laterGoal . runtimeActive <$> readRuntime runtime
-      forM_ maybeTask (cancel . activeGoalTask)
+      forM_ maybeTask activeGoalAbort
 
   loop runtime = do
     current <- readRuntime runtime
@@ -124,15 +128,36 @@ runSpeculativeChase runner nodes = do
             (task, outcome) <- waitAnyCatch (activeGoalTask . snd <$> activeGoals)
             case find ((== task) . activeGoalTask . snd) activeGoals of
               Nothing -> loop runtime
-              Just (goalId, ActiveGoal _ _) -> do
+              Just (goalId, ActiveGoal epoch _ _) -> do
                 status <- removeActive runtime goalId
                 case status of
                   Just (SpeculativeAborted _) -> do
+                    restartReadyAborted runtime goalId
                     loop runtime
                   _ ->
                     case outcome of
-                      Left err -> pure (Left (Text.pack (displayException err)))
-                      Right (Left err) -> pure (Left err)
+                      Left err ->
+                        pure
+                          ( Left
+                              ( "speculative goal "
+                                  <> unGoalNodeId goalId
+                                  <> " epoch "
+                                  <> Text.pack (show (unGoalEpoch epoch))
+                                  <> " threw: "
+                                  <> Text.pack (displayException err)
+                              )
+                          )
+                      Right (Left err) ->
+                        pure
+                          ( Left
+                              ( "speculative goal "
+                                  <> unGoalNodeId goalId
+                                  <> " epoch "
+                                  <> Text.pack (show (unGoalEpoch epoch))
+                                  <> " failed: "
+                                  <> err
+                              )
+                          )
                       Right (Right result)
                         | agentRunResultGoal result /= goalId ->
                             pure (Left "agent result goal id does not match speculative goal")
@@ -151,20 +176,30 @@ runSpeculativeChase runner nodes = do
     staged <-
       forM launches $ \(node, epoch) -> do
         gate <- newEmptyMVar
+        abortActionRef <- newIORef (pure ())
+        abortRequestedRef <- newIORef False
+        let
+          registerAbort action = do
+            writeIORef abortActionRef action
+            requested <- readIORef abortRequestedRef
+            when requested action
+          requestAbort = do
+            writeIORef abortRequestedRef True
+            join (readIORef abortActionRef)
         task <- async $ do
           takeMVar gate
-          speculativeChaseRunGoal runner node epoch (report runtime (goalNodeId node) epoch)
-        pure (goalNodeId node, epoch, gate, task)
+          speculativeChaseRunGoal runner node epoch (report runtime (goalNodeId node) epoch) registerAbort
+        pure (goalNodeId node, epoch, gate, task, requestAbort)
     modifyMVar_ runtime $ \current ->
       pure
         current
           { runtimeActive =
               foldr
-                (\(goalId, epoch, _, task) -> Map.insert goalId (ActiveGoal epoch task))
+                (\(goalId, epoch, _, task, requestAbort) -> Map.insert goalId (ActiveGoal epoch task requestAbort))
                 (runtimeActive current)
                 staged
           }
-    forM_ staged $ \(_, _, gate, _) -> putMVar gate ()
+    forM_ staged $ \(_, _, gate, _, _) -> putMVar gate ()
 
   removeActive runtime goalId =
     modifyMVar runtime $ \current ->
@@ -225,9 +260,21 @@ runSpeculativeChase runner nodes = do
               )
     unless (null launches) (launchGoals runtime launches)
 
+  -- A graceful Pi abort may finish after the serial prefix has already moved.
+  -- Its old duplicate is then discarded and the goal is relaunched from that
+  -- newly committed prefix.  Never restart merely because some unrelated goal
+  -- completed: the aborted epoch's own base must be stale.
+  restartReadyAborted runtime goalId = do
+    current <- readRuntime runtime
+    let base = Map.findWithDefault 0 goalId (speculativeGoalBase (runtimeState current))
+    when (speculativeNextCommit (runtimeState current) > base) $
+      restartAborted runtime
+
   cancelActive runtime = do
     active <- runtimeActive <$> readRuntime runtime
-    forM_ (Map.elems active) (cancel . activeGoalTask)
+    forM_ (Map.elems active) $ \activeGoal -> do
+      activeGoalAbort activeGoal
+      cancel (activeGoalTask activeGoal)
 
 readRuntime :: MVar Runtime -> IO Runtime
 readRuntime runtime = modifyMVar runtime (\current -> pure (current, current))

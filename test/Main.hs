@@ -1835,6 +1835,7 @@ speculativeRunnerTest :: IO ()
 speculativeRunnerTest = do
   s1Ready <- newEmptyMVar
   allowS1Finish <- newEmptyMVar
+  abortS2 <- newEmptyMVar
   s2Epochs <- newIORef []
   _ <-
     forkIO $ do
@@ -1845,7 +1846,7 @@ speculativeRunnerTest = do
     SpeculativeRunner.runSpeculativeChase
       SpeculativeRunner.SpeculativeChaseRunner
         { SpeculativeRunner.speculativeChaseRunGoal =
-            \node epoch report ->
+            \node epoch report registerAbort ->
               case goalNodeId node of
                 goal | goal == goalId "S1" -> do
                   report (Speculative.EffectSet Set.empty (Set.singleton "generated.txt"))
@@ -1856,7 +1857,10 @@ speculativeRunnerTest = do
                   modifyIORef' s2Epochs (<> [epoch])
                   report (Speculative.EffectSet (Set.singleton "generated.txt") Set.empty)
                   if epoch == Speculative.GoalEpoch 0
-                    then threadDelay 10000000 >> pure (Right (fakeAgentRunResult node))
+                    then do
+                      registerAbort (putMVar abortS2 ())
+                      takeMVar abortS2
+                      pure (Right (fakeAgentRunResult node))
                     else pure (Right (fakeAgentRunResult node))
         , SpeculativeRunner.speculativeChaseMergeGoal = \_ -> pure (Right ())
         }

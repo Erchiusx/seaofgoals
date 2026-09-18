@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 
 const piRoot = process.env.SOG_PI_ROOT || "/home/erchius/development/pi";
@@ -153,16 +153,34 @@ async function run(request) {
   const unsubscribe = session.subscribe((event) => {
     process.stdout.write(`${JSON.stringify(event)}\n`);
   });
+  let abortRequested = false;
+  let abortInFlight = false;
+  const requestToolAbort = async () => {
+    if (abortRequested || abortInFlight) return;
+    abortInFlight = true;
+    try {
+      await access(request.abortFile);
+      abortRequested = true;
+      process.stdout.write(`${JSON.stringify({ type: "sog_tool_abort_requested" })}\n`);
+      await session.abort();
+    } catch {
+      // The control file is absent until the host detects a conflict.
+    } finally {
+      abortInFlight = false;
+    }
+  };
+  const abortPoller = request.abortFile ? setInterval(() => void requestToolAbort(), 20) : undefined;
   try {
     await session.prompt(request.prompt || "");
     const lastMessage = session.state.messages.at(-1);
     if (
       lastMessage?.role === "assistant" &&
-      (lastMessage.stopReason === "error" || lastMessage.stopReason === "aborted")
+      (lastMessage.stopReason === "error" || lastMessage.stopReason === "aborted") && !abortRequested
     ) {
       throw new Error(lastMessage.errorMessage || `Pi request ${lastMessage.stopReason}`);
     }
   } finally {
+    if (abortPoller) clearInterval(abortPoller);
     unsubscribe();
     session.dispose();
   }

@@ -65,6 +65,7 @@ import Agent.SeaOfGoals.PiProcess
   , loadPiProcessConfigFromEnv
   , runPiProcess
   , runPiSdkProcess
+  , runPiSdkProcessWithAbortFile
   )
 import Agent.SeaOfGoals.PredictedActions
   ( PredictedActionsPlan (..)
@@ -582,6 +583,7 @@ runConcurrentPromptWithGraphLegacy context compiledGraph = do
                     runBaseGenerationsRef
                     runsRef
                     (const (pure ()))
+                    (const (pure ()))
               , concurrentChaseMergeGoal =
                   mergeConcurrentGoal
                     context
@@ -617,6 +619,7 @@ runConcurrentPromptWithGraphLegacy context compiledGraph = do
                     acceptedGenerationRef
                     runBaseGenerationsRef
                     runsRef
+                    (const (pure ()))
                     (const (pure ()))
               , concurrentChaseMergeGoal =
                   mergeConcurrentGoal
@@ -673,7 +676,7 @@ runOrderedSpeculativePromptWithGraph context compiledGraph = do
     SpeculativeRunner.runSpeculativeChase
       SpeculativeRunner.SpeculativeChaseRunner
         { SpeculativeRunner.speculativeChaseRunGoal =
-            \node _epoch reportEffects ->
+            \node _epoch reportEffects registerAbort ->
               runConcurrentGoal
                 context
                 goalGraph
@@ -686,6 +689,7 @@ runOrderedSpeculativePromptWithGraph context compiledGraph = do
                 runBaseGenerationsRef
                 runsRef
                 reportEffects
+                registerAbort
                 node
         , SpeculativeRunner.speculativeChaseMergeGoal =
             \agentResult -> do
@@ -1474,6 +1478,7 @@ runConcurrentGoal
   -> IORef (Map GoalNodeId Int)
   -> IORef (Map GoalNodeId Int)
   -> (EffectSet -> IO ())
+  -> (IO () -> IO ())
   -> GoalNode
   -> IO (Either Text AgentRunResult)
 runConcurrentGoal
@@ -1488,6 +1493,7 @@ runConcurrentGoal
   runBaseGenerationsRef
   runsRef
   reportEffects
+  registerAbort
   node = do
     recordGraphSnapshot
       context
@@ -1597,6 +1603,7 @@ runConcurrentGoal
               prompt
               harnessPredecessorHistory
               reportEffects
+              registerAbort
 
 runConcurrentHarnessGoal
   :: ExperimentContext
@@ -1873,13 +1880,15 @@ runConcurrentPiGoalWithFuse
   -> Text
   -> [LLMInputItem]
   -> (EffectSet -> IO ())
+  -> (IO () -> IO ())
   -> IO (Either Text AgentRunResult)
 #ifdef SOG_FUSE
-runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecessorHistory reportEffects = do
+runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecessorHistory reportEffects registerAbort = do
   resetDirectory runRoot
   let
     storeRoot = runRoot </> "store"
     controlRoot = runRoot </> "control"
+    abortFile = controlRoot </> "sog-abort-tool"
     backend = FuseStore.Backend storeRoot
     taskId = unGoalNodeId (goalNodeId node)
   handle <-
@@ -1891,6 +1900,9 @@ runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecesso
         , FuseStore.specAgentMountPath = "/workspace"
         }
   let mountValue = WorkspaceBackend.mount backend handle
+  registerAbort $ do
+    createDirectoryIfMissing True controlRoot
+    writeFile abortFile "speculative conflict\n"
   accessCursor <- newIORef 0
   (piResult, preloadedReads) <-
     bracket
@@ -1904,7 +1916,7 @@ runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecesso
               baseWorkspace
               prompt
           result <-
-            runPiSdkProcess
+            runPiSdkProcessWithAbortFile
               (experimentPiProcessConfig context)
               ( \event -> do
                   experimentEventSink context event
@@ -1918,6 +1930,7 @@ runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecesso
               ( (if experimentPiHistoryHandoff context then predecessorHistory else [])
                   <> preloadedGoalContextHistory preloaded
               )
+              (Just "/pi-agent/sog-abort-tool")
           pure (result, preloadedGoalContextReads preloaded)
       )
   flushPiFuseEffects context taskId accessCursor handle reportEffects
@@ -1944,7 +1957,7 @@ runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecesso
     then pure (Right result)
     else pure (Left ("concurrent pi goal failed: " <> status))
 #else
-runConcurrentPiGoalWithFuse _ _ _ _ _ _ _ =
+runConcurrentPiGoalWithFuse _ _ _ _ _ _ _ _ =
   pure (Left "SOG_CONCURRENT_WORKSPACE=fuse requires building SeaOfGoals with -f fuse")
 #endif
 
