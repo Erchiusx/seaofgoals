@@ -1,0 +1,47 @@
+{
+  "skill": "port-widget",
+  "goals": [
+    {
+      "id": "G001",
+      "name": "Audit scope and precedents",
+      "description": "Read-only coverage audit for the existing connector and the missing wrapper layers.",
+      "predecessors": [],
+      "goal_entering_prompt": "Work only on this read-only audit. From /workspace run `python3 scripts/audit_widget_coverage.py color-menu`, then inspect the existing `connectColorMenu` connector and the nearest search-box equivalents in JavaScript, React, Vue, exports, and common-widget metadata. Establish the exact existing-connector wrapper pattern, expected `$$widgetType`, and the exact files that must change. Do not edit any file, run the checker, build, test, or create a plan for another goal. Finish with a concise report for the later independent implementation goals."
+    },
+    {
+      "id": "G002",
+      "name": "Implement the JavaScript colorMenu widget",
+      "description": "Create the InstantSearch.js widget wrapper and its two public exports without altering the connector.",
+      "predecessors": [],
+      "goal_entering_prompt": "Implement only the JavaScript layer for the requested color-menu port in /workspace. Keep the existing connector `packages/instantsearch.js/src/connectors/color-menu/connectColorMenu.ts` unchanged. Read close widget precedents as needed, then create `packages/instantsearch.js/src/widgets/color-menu/color-menu.tsx`, backed by `connectColorMenu`, with `$$widgetType` `ais.colorMenu`. Export `colorMenu` only from `packages/instantsearch.js/src/widgets/index.ts` and `packages/instantsearch.js/src/widgets/index.umd.ts`. Do not modify any React, Vue, test, connector, script, or unrelated file. Do not run audits, tests, builds, type checks, or the checker; do not reread merely to validate your edits."
+    },
+    {
+      "id": "G003",
+      "name": "Implement the React colorMenu layer",
+      "description": "Create the React core hook, UI, widget, and React exports in their owned files.",
+      "predecessors": [],
+      "goal_entering_prompt": "Implement only the React layer for the requested color-menu port in /workspace. Inspect close React and core precedents as needed. Create `packages/react-instantsearch-core/src/connectors/useColorMenu.ts`, backed by the existing `connectColorMenu`, and export it from `packages/react-instantsearch-core/src/index.ts`. Create `packages/react-instantsearch/src/ui/ColorMenu.tsx` and `packages/react-instantsearch/src/widgets/ColorMenu.tsx`; the widget must use `useColorMenu` and have `$$widgetType` `ais.colorMenu`. Export `ColorMenu` only from `packages/react-instantsearch/src/widgets/index.ts` and `packages/react-instantsearch/src/widgets/index.umd.ts`. Do not modify JavaScript widgets, Vue, common tests, all-widgets, the connector, scripts, or unrelated files. Do not run audits, tests, builds, type checks, or the checker; do not reread merely to validate your edits."
+    },
+    {
+      "id": "G004",
+      "name": "Implement the Vue colorMenu layer",
+      "description": "Create the Vue wrapper and widget export without touching other flavor layers or tests.",
+      "predecessors": [],
+      "goal_entering_prompt": "Implement only the Vue layer for the requested color-menu port in /workspace. Inspect close Vue precedents as needed. Create `packages/vue-instantsearch/src/components/ColorMenu.vue`, use the established `createWidgetMixin` plus the existing `connectColorMenu`, and set `$$widgetType` `ais.colorMenu`. Export `AisColorMenu` only from `packages/vue-instantsearch/src/widgets.js`. Do not modify JavaScript, React, common tests, Vue test registries, the connector, scripts, or unrelated files. Do not run audits, tests, builds, type checks, or the checker; do not reread merely to validate your edits."
+    },
+    {
+      "id": "G005",
+      "name": "Wire color-menu test metadata",
+      "description": "Add the shared color-menu metadata and registrations, including the Vue placeholder replacement and React all-widgets entry.",
+      "predecessors": [],
+      "goal_entering_prompt": "Implement only the test and registration wiring for the requested color-menu port in /workspace. Follow the neighboring search-box fixture to create `tests/common/widgets/color-menu/default.ts`. Register `color-menu` in exactly these files: `packages/instantsearch.js/src/__tests__/common-widgets.test.js`, `packages/react-instantsearch/src/__tests__/common-widgets.test.tsx`, and `packages/vue-instantsearch/src/__tests__/common-widgets.test.js`; replace the Vue unsupported placeholder with real AisColorMenu setup. Add `ColorMenu` with minimum valid props to `packages/react-instantsearch/src/widgets/__tests__/__utils__/all-widgets.tsx`. Do not touch production widget, export, connector, or script files. Do not run audits, tests, builds, type checks, or the checker; do not reread merely to validate your edits."
+    },
+    {
+      "id": "G006",
+      "name": "Validate the integrated port",
+      "description": "Check the fully integrated port and make minimal corrections only after all required layers are present.",
+      "predecessors": [],
+      "goal_entering_prompt": "Own final integration validation only. Inspect the current /workspace and run `node scripts/check-port-widget.js`. If every required JavaScript, React, Vue, and common-test file is already present, diagnose a checker failure and make only the smallest correction required by that failure, then rerun the checker. If required layers are absent in this workspace snapshot, do not create placeholders or implement another goal's work: report the missing layers and make no edits. Do not change the existing connector. Do not refactor unrelated files or run broader tests/builds/type checks. Report the checker result and any minimal correction."
+    }
+  ]
+}
