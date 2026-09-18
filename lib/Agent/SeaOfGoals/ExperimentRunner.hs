@@ -1877,7 +1877,8 @@ runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecesso
   let
     storeRoot = runRoot </> "store"
     controlRoot = runRoot </> "control"
-    abortFile = controlRoot </> "sog-abort-tool"
+    -- Pi sees only controlRoot/pi-agent as /pi-agent inside bwrap.
+    abortFile = controlRoot </> "pi-agent" </> "sog-abort-tool"
     backend = FuseStore.Backend storeRoot
     taskId = unGoalNodeId (goalNodeId node)
   handle <-
