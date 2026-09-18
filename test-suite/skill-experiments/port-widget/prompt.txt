@@ -9,7 +9,7 @@ When searching the workspace, exclude sog-trace.jsonl and other generated trace/
 
 Concrete fixture requirements:
 - Run the audit first: python3 scripts/audit_widget_coverage.py color-menu
-- If `packages/instantsearch.js/src/connectors/color-menu/connectColorMenu.ts` exists, keep it unchanged. If it is absent, create the minimal connector required by the wrapper layers and export it from the connector indexes.
+- Keep the existing connector unchanged.
 - Create packages/instantsearch.js/src/widgets/color-menu/color-menu.tsx.
 - Export colorMenu from packages/instantsearch.js/src/widgets/index.ts and index.umd.ts.
 - Create packages/react-instantsearch-core/src/connectors/useColorMenu.ts.
