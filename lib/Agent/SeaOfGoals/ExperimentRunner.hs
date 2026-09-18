@@ -66,6 +66,7 @@ import Agent.SeaOfGoals.PiProcess
   , runPiProcess
   , runPiSdkProcess
   , runPiSdkProcessWithAbortFile
+  , piReadOnlyHistoryPrefix
   )
 import Agent.SeaOfGoals.PredictedActions
   ( PredictedActionsPlan (..)
@@ -248,6 +249,7 @@ data ExperimentContext = ExperimentContext
   , experimentCodexHistoryHandoff :: Bool
   , experimentHarnessHistoryHandoff :: Bool
   , experimentPiHistoryHandoff :: Bool
+  , experimentSpeculativeRetryHistory :: SpeculativeRetryHistory
   , experimentConcurrentWorkspaceMode :: ConcurrentWorkspaceMode
   , experimentConflictMode :: ConflictMode
   , experimentGoalContextPreloadConfig :: GoalContextPreloadConfig
@@ -268,6 +270,11 @@ data AgentRunnerMode
 data ConcurrentWorkspaceMode
   = CopyTreeWorkspace
   | FuseEventWorkspace
+  deriving stock (Eq, Show)
+
+data SpeculativeRetryHistory
+  = SpeculativeRetryClean
+  | SpeculativeRetryReadPrefix
   deriving stock (Eq, Show)
 
 data AcceptedEffects = AcceptedEffects
@@ -344,6 +351,7 @@ loadExperimentContext apiKey prompt = do
   codexHistoryHandoff <- loadCodexHistoryHandoff
   harnessHistoryHandoff <- loadHarnessHistoryHandoff
   piHistoryHandoff <- loadPiHistoryHandoff
+  speculativeRetryHistory <- loadSpeculativeRetryHistory
   concurrentWorkspaceMode <- loadConcurrentWorkspaceMode
   conflictMode <- loadConflictModeFromEnv
   goalContextPreloadConfig <- loadGoalContextPreloadConfigFromEnv
@@ -426,6 +434,7 @@ loadExperimentContext apiKey prompt = do
       , experimentCodexHistoryHandoff = codexHistoryHandoff
       , experimentHarnessHistoryHandoff = harnessHistoryHandoff
       , experimentPiHistoryHandoff = piHistoryHandoff
+      , experimentSpeculativeRetryHistory = speculativeRetryHistory
       , experimentConcurrentWorkspaceMode = concurrentWorkspaceMode
       , experimentConflictMode = conflictMode
       , experimentGoalContextPreloadConfig = goalContextPreloadConfig
@@ -582,6 +591,7 @@ runConcurrentPromptWithGraphLegacy context compiledGraph = do
                     acceptedGenerationRef
                     runBaseGenerationsRef
                     runsRef
+                    Nothing
                     (const (pure ()))
                     (const (pure ()))
               , concurrentChaseMergeGoal =
@@ -619,6 +629,7 @@ runConcurrentPromptWithGraphLegacy context compiledGraph = do
                     acceptedGenerationRef
                     runBaseGenerationsRef
                     runsRef
+                    Nothing
                     (const (pure ()))
                     (const (pure ()))
               , concurrentChaseMergeGoal =
@@ -669,6 +680,7 @@ runOrderedSpeculativePromptWithGraph context compiledGraph = do
   pendingHistoriesRef <- newCodexHistories
   harnessHistoriesRef <- newGoalHistories
   runsRef <- newIORef Map.empty
+  retryHistoriesRef <- newIORef Map.empty
   acceptedGenerationRef <- newIORef 0
   runBaseGenerationsRef <- newIORef Map.empty
   result <-
@@ -687,6 +699,7 @@ runOrderedSpeculativePromptWithGraph context compiledGraph = do
                 acceptedGenerationRef
                 runBaseGenerationsRef
                 runsRef
+                (Just retryHistoriesRef)
                 reportEffects
                 registerAbort
                 node
@@ -722,6 +735,19 @@ loadOrderedSpeculativeChase :: IO Bool
 loadOrderedSpeculativeChase = do
   value <- lookupEnv "SOG_SPECULATIVE_ORDERED"
   pure (value `elem` [Just "1", Just "true", Just "yes"])
+
+-- | Retry history is intentionally separate from predecessor handoff: it is
+-- the aborted duplicate's own exploratory history, replayed against a newer
+-- serial workspace base.
+loadSpeculativeRetryHistory :: IO SpeculativeRetryHistory
+loadSpeculativeRetryHistory = do
+  value <- fmap (fmap (Text.toLower . Text.strip . Text.pack)) (lookupEnv "SOG_SPECULATIVE_RETRY_HISTORY")
+  case value of
+    Nothing -> pure SpeculativeRetryClean
+    Just "" -> pure SpeculativeRetryClean
+    Just "clean" -> pure SpeculativeRetryClean
+    Just "read-prefix" -> pure SpeculativeRetryReadPrefix
+    Just other -> fail ("unknown SOG_SPECULATIVE_RETRY_HISTORY: " <> Text.unpack other <> " (expected clean or read-prefix)")
 
 detachPlannerEdges :: Text -> GoalGraph -> GoalGraph
 detachPlannerEdges plannerId graph =
@@ -1466,6 +1492,7 @@ runConcurrentGoal
   -> IORef Int
   -> IORef (Map GoalNodeId Int)
   -> IORef (Map GoalNodeId Int)
+  -> Maybe (IORef (Map GoalNodeId [LLMInputItem]))
   -> (EffectSet -> IO ())
   -> (IO () -> IO ())
   -> GoalNode
@@ -1481,6 +1508,7 @@ runConcurrentGoal
   acceptedGenerationRef
   runBaseGenerationsRef
   runsRef
+  retryHistoriesRef
   reportEffects
   registerAbort
   node = do
@@ -1591,6 +1619,7 @@ runConcurrentGoal
               node
               prompt
               harnessPredecessorHistory
+              retryHistoriesRef
               reportEffects
               registerAbort
 
@@ -1868,11 +1897,12 @@ runConcurrentPiGoalWithFuse
   -> GoalNode
   -> Text
   -> [LLMInputItem]
+  -> Maybe (IORef (Map GoalNodeId [LLMInputItem]))
   -> (EffectSet -> IO ())
   -> (IO () -> IO ())
   -> IO (Either Text AgentRunResult)
 #ifdef SOG_FUSE
-runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecessorHistory reportEffects registerAbort = do
+runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecessorHistory retryHistoriesRef reportEffects registerAbort = do
   resetDirectory runRoot
   let
     storeRoot = runRoot </> "store"
@@ -1881,6 +1911,10 @@ runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecesso
     abortFile = controlRoot </> "pi-agent" </> "sog-abort-tool"
     backend = FuseStore.Backend storeRoot
     taskId = unGoalNodeId (goalNodeId node)
+  retryHistory <-
+    case retryHistoriesRef of
+      Nothing -> pure []
+      Just histories -> Map.findWithDefault [] (goalNodeId node) <$> readIORef histories
   handle <-
     WorkspaceBackend.prepareWorkspace
       backend
@@ -1917,12 +1951,23 @@ runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecesso
               (WorkspaceBackend.mountHostPath mountValue)
               controlRoot
               (piPrompt context prompt)
-              ( (if experimentPiHistoryHandoff context then predecessorHistory else [])
+              ( retryHistory
+                  <> (if experimentPiHistoryHandoff context then predecessorHistory else [])
                   <> preloadedGoalContextHistory preloaded
               )
               (Just "/pi-agent/sog-abort-tool")
           pure (result, preloadedGoalContextReads preloaded)
       )
+  case retryHistoriesRef of
+    Nothing -> pure ()
+    Just histories ->
+      modifyIORef'
+        histories
+        ( case experimentSpeculativeRetryHistory context of
+            SpeculativeRetryClean -> Map.delete (goalNodeId node)
+            SpeculativeRetryReadPrefix ->
+              Map.insert (goalNodeId node) (piReadOnlyHistoryPrefix piResult)
+        )
   flushPiFuseEffects context taskId accessCursor handle reportEffects
   accessLog <- filterWorkspaceAccesses <$> FuseStore.accessLog handle
   let
@@ -1947,7 +1992,7 @@ runConcurrentPiGoalWithFuse context baseWorkspace runRoot node prompt predecesso
     then pure (Right result)
     else pure (Left ("concurrent pi goal failed: " <> status))
 #else
-runConcurrentPiGoalWithFuse _ _ _ _ _ _ _ _ =
+runConcurrentPiGoalWithFuse _ _ _ _ _ _ _ _ _ =
   pure (Left "SOG_CONCURRENT_WORKSPACE=fuse requires building SeaOfGoals with -f fuse")
 #endif
 

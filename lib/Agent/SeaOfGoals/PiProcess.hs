@@ -6,6 +6,7 @@ module Agent.SeaOfGoals.PiProcess
   , runPiProcess
   , runPiSdkProcess
   , runPiSdkProcessWithAbortFile
+  , piReadOnlyHistoryPrefix
   , piExpectedVersion
   )
 where
@@ -52,6 +53,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
+import Data.List (find)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
@@ -88,6 +90,77 @@ data PiProcessResult = PiProcessResult
   , piProcessStderr :: Text
   }
   deriving stock (Eq, Show)
+
+-- | Keep only a completed, demonstrably read-only prefix from a Pi round.
+-- This is intentionally conservative: native 'read' calls are accepted, and
+-- bash is accepted only for a simple ls/rg/grep command.  The first other
+-- call is the potential write boundary and is not replayed.
+piReadOnlyHistoryPrefix :: PiProcessResult -> [LLMInputItem]
+piReadOnlyHistoryPrefix result =
+  concatMap completedReadOnly prefixCalls
+ where
+  history = piToolHistory (piProcessStdout result)
+  prefixCalls = takeWhile piToolCallIsReadOnly [call | ToolCallInput call <- history]
+  results = [toolResult | ToolResultInput toolResult <- history]
+  completedReadOnly toolCall =
+    case find ((== toolCallId toolCall) . toolResultCallId) results of
+      Just toolResult -> [ToolCallInput toolCall, ToolResultInput toolResult]
+      Nothing -> []
+
+piToolHistory :: Text -> [LLMInputItem]
+piToolHistory = concatMap eventHistory . Text.lines
+ where
+  eventHistory line =
+    case eitherDecodeStrict (TextEncoding.encodeUtf8 line) of
+      Right (Object objectValue) ->
+        case textField "type" objectValue of
+          Just "tool_execution_start" ->
+            case (textField "toolCallId" objectValue, textField "toolName" objectValue) of
+              (Just callId, Just toolName) ->
+                [ ToolCallInput
+                    ToolCall
+                      { toolCallId = callId
+                      , toolCallName = toolName
+                      , toolCallArguments = maybe Null id (KeyMap.lookup (Key.fromString "args") objectValue)
+                      }
+                ]
+              _ -> []
+          Just "tool_execution_end" ->
+            case (textField "toolCallId" objectValue, textField "toolName" objectValue) of
+              (Just callId, Just toolName) ->
+                [ ToolResultInput
+                    ToolResult
+                      { toolResultCallId = callId
+                      , toolResultName = Just toolName
+                      , toolResultContent = [TextPart (maybe "" valueText (KeyMap.lookup (Key.fromString "result") objectValue))]
+                      }
+                ]
+              _ -> []
+          _ -> []
+      Right _ -> []
+      Left _ -> []
+
+piToolCallIsReadOnly :: ToolCall -> Bool
+piToolCallIsReadOnly toolCall =
+  case toolCallName toolCall of
+    "read" -> True
+    "bash" -> simpleExploreCommand (bashCommand (toolCallArguments toolCall))
+    _ -> False
+
+bashCommand :: Value -> Text
+bashCommand (Object arguments) =
+  case KeyMap.lookup (Key.fromString "command") arguments of
+    Just (String command) -> command
+    _ -> valueText (Object arguments)
+bashCommand arguments = valueText arguments
+
+simpleExploreCommand :: Text -> Bool
+simpleExploreCommand command =
+  case Text.words (Text.strip command) of
+    executable : _
+      | executable `elem` ["ls", "rg", "grep"] ->
+          not (Text.any (`elem` (";&|><`$" :: String)) command)
+    _ -> False
 
 defaultPiProcessConfig :: IO PiProcessConfig
 defaultPiProcessConfig = do

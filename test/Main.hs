@@ -55,6 +55,10 @@ import Agent.SeaOfGoals.LLM.Backends.GPT
   ( defaultGPTEndpoint
   , loadGPTEndpointFromEnv
   )
+import Agent.SeaOfGoals.PiProcess
+  ( PiProcessResult (..)
+  , piReadOnlyHistoryPrefix
+  )
 import Agent.SeaOfGoals.Scheduling.Agentic
   ( AgentRunResult (..)
   , GoalGraph (..)
@@ -199,6 +203,7 @@ import Data.Aeson
   , (.=)
   )
 import Data.ByteString qualified as ByteString
+import Data.ByteString.Lazy qualified as LazyByteString
 import Data.IORef
   ( IORef
   , atomicModifyIORef'
@@ -260,6 +265,7 @@ main = do
   serialSchedulerTest
   speculativeChaseSchedulerTest
   speculativeRunnerTest
+  piReadOnlyHistoryPrefixTest
   sandboxedToolCallTest
   eventsRef <- newIORef []
   provider <- newFakeProvider fakeResponses
@@ -1872,6 +1878,35 @@ speculativeRunnerTest = do
       assertEqual "conflicting later goal is restarted after the prefix commits" [goalId "S2"] (SpeculativeRunner.speculativeChaseRestarted summary)
   observedEpochs <- readIORef s2Epochs
   assertEqual "restarted goal receives the rebased epoch" [Speculative.GoalEpoch 0, Speculative.GoalEpoch 1] observedEpochs
+
+piReadOnlyHistoryPrefixTest :: IO ()
+piReadOnlyHistoryPrefixTest = do
+  let event eventType callId toolName extra =
+        TextEncoding.decodeUtf8 . LazyByteString.toStrict . encode $
+          object
+            ( [ "type" .= (eventType :: Text)
+              , "toolCallId" .= (callId :: Text)
+              , "toolName" .= (toolName :: Text)
+              ]
+                <> extra
+            )
+      stdout =
+        Text.unlines
+          [ event "tool_execution_start" "read-1" "read" ["args" .= object ["path" .= ("README.md" :: Text)]]
+          , event "tool_execution_start" "rg-1" "bash" ["args" .= object ["command" .= ("rg widget src" :: Text)]]
+          , event "tool_execution_end" "read-1" "read" ["result" .= ("contents" :: Text)]
+          , event "tool_execution_end" "rg-1" "bash" ["result" .= ("matches" :: Text)]
+          , event "tool_execution_start" "write-1" "edit" ["args" .= object []]
+          , event "tool_execution_end" "write-1" "edit" ["result" .= ("updated" :: Text)]
+          ]
+      result = PiProcessResult 0 False stdout ""
+      replay = piReadOnlyHistoryPrefix result
+  assertEqual "read-prefix retains two completed read-only call/result pairs" 4 (length replay)
+  assertBool "read-prefix never replays the first potential writer" (all (not . isEditHistory) replay)
+ where
+  isEditHistory (ToolCallInput call) = toolCallName call == "edit"
+  isEditHistory (ToolResultInput result) = toolResultName result == Just "edit"
+  isEditHistory _ = False
 
 sandboxedToolCallTest :: IO ()
 sandboxedToolCallTest = do
