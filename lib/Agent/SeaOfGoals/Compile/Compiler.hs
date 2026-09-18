@@ -221,7 +221,7 @@ compilerCodexPromptForStrategy strategy insertPreloadPlanner skillName skillText
     . Text.replace
       "{{preload_instructions}}"
       (compilerPreloadPlannerInstructions insertPreloadPlanner)
-    . Text.replace "{{system_prompt}}" (compilerSystemPrompt <> compilerStrategyInstructions strategy)
+    . Text.replace "{{system_prompt}}" (compilerSystemPromptForStrategy strategy)
     $ $(embedTextFile "lib/Agent/SeaOfGoals/Prompts/compiler-codex-prompt.txt")
 
 compileSkill
@@ -255,8 +255,7 @@ compileSkillWithStrategy provider model strategy skillName skillText = do
                   { messageRole = System
                   , messageContent =
                       [ TextPart
-                          ( compilerSystemPrompt
-                              <> compilerStrategyInstructions strategy
+                          ( compilerSystemPromptForStrategy strategy
                               <> compilerPreloadPlannerInstructions insertPreloadPlanner
                           )
                       ]
@@ -491,10 +490,10 @@ compilerSystemPrompt :: Text
 compilerSystemPrompt =
   $(embedTextFile "lib/Agent/SeaOfGoals/Prompts/compiler-system.txt")
 
-compilerStrategyInstructions :: CompilerStrategy -> Text
-compilerStrategyInstructions DagCompilerStrategy = ""
-compilerStrategyInstructions OrderedSpeculativeCompilerStrategy =
-  "\n\nThe runtime will launch every compiled goal immediately from the same initial workspace and commit them in list order. The list order is therefore the only execution order: make it a deliberate serial decomposition. Emit no predecessor edges. Each goal must describe a narrow, restart-safe slice of work and may be re-run after the earlier list prefix has been committed. Do not rely on predecessor summaries or a predecessor-produced workspace state at initial launch; later goals must inspect what they need themselves. Keep cross-goal file ownership as disjoint as practical, and put unavoidable integration or validation after the writers."
+compilerSystemPromptForStrategy :: CompilerStrategy -> Text
+compilerSystemPromptForStrategy DagCompilerStrategy = compilerSystemPrompt
+compilerSystemPromptForStrategy OrderedSpeculativeCompilerStrategy =
+  $(embedTextFile "lib/Agent/SeaOfGoals/Prompts/compiler-system-ordered-speculative.txt")
 
 loadCompilerStrategy :: IO CompilerStrategy
 loadCompilerStrategy = do

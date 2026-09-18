@@ -460,10 +460,13 @@ compilerPreloadPlannerPromptTest = do
   let speculativePrompt = compilerCodexPromptForStrategy OrderedSpeculativeCompilerStrategy False "demo" "raw skill"
   assertBool
     "ordered speculative compiler prompt makes list order canonical"
-    ("only execution order" `Text.isInfixOf` speculativePrompt)
+    ("sole canonical serial commit order" `Text.isInfixOf` speculativePrompt)
   assertBool
     "ordered speculative compiler prompt forbids DAG predecessors"
-    ("Emit no predecessor edges" `Text.isInfixOf` speculativePrompt)
+    ("Do not emit predecessor edges" `Text.isInfixOf` speculativePrompt)
+  assertBool
+    "ordered speculative compiler prompt forbids the planner goal"
+    ("Do not create G000" `Text.isInfixOf` speculativePrompt)
 
 plannerResolutionParsingTest :: IO ()
 plannerResolutionParsingTest = do

@@ -1,0 +1,17 @@
+Compile the raw SKILL.md into a short, ordered list of executable work goals
+for an aggressively speculative agent run.
+
+Do not create G000 or any planner goal. Do not emit predecessor edges: every
+goal starts concurrently from the same initial workspace. The order in the
+returned `goals` array is the sole canonical serial commit order.
+
+Give every goal a narrow, concrete responsibility and instruct it not to edit
+files outside that responsibility. Goals cannot rely on predecessor summaries
+or effects at their initial launch, so each must inspect the evidence it needs.
+The runtime may terminate and restart a later goal after earlier results commit;
+therefore make each goal safe to rerun against a newer workspace. Keep likely
+file ownership disjoint where possible, and place unavoidable integration and
+validation after their contributing writers.
+
+Do not invent planning, bookkeeping, or validation goals unless the skill
+itself needs that work. Return only the required compiled-goal JSON object.

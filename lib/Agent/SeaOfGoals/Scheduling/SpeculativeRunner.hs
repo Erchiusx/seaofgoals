@@ -144,7 +144,7 @@ runSpeculativeChase runner nodes = do
                                 cancelActive runtime
                                 pure (Left err)
                               Right () -> do
-                                restartAborted runtime
+                                unless (null committed) (restartAborted runtime)
                                 loop runtime
 
   launchGoals runtime launches = do
