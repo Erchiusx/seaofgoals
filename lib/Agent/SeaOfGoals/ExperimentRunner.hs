@@ -669,7 +669,6 @@ runOrderedSpeculativePromptWithGraph context compiledGraph = do
   pendingHistoriesRef <- newCodexHistories
   harnessHistoriesRef <- newGoalHistories
   runsRef <- newIORef Map.empty
-  acceptedEffectsRef <- newIORef []
   acceptedGenerationRef <- newIORef 0
   runBaseGenerationsRef <- newIORef Map.empty
   result <-
@@ -693,22 +692,12 @@ runOrderedSpeculativePromptWithGraph context compiledGraph = do
                 node
         , SpeculativeRunner.speculativeChaseMergeGoal =
             \agentResult -> do
-              mergeResult <-
-                mergeConcurrentGoal
-                  context
-                  goalGraph
-                  workspaceRoot
-                  summariesRef
-                  acceptedHistoriesRef
-                  pendingHistoriesRef
-                  acceptedEffectsRef
-                  acceptedGenerationRef
-                  runBaseGenerationsRef
-                  agentResult
-              pure $
-                case mergeResult of
-                  Left conflict -> Left (concurrentChaseConflictReason conflict)
-                  Right () -> Right ()
+              mergeOrderedSpeculativeGoal
+                context
+                goalGraph
+                workspaceRoot
+                summariesRef
+                agentResult
         }
       (Map.elems (goalGraphNodes goalGraph))
   case result of
@@ -2122,6 +2111,29 @@ mergeConcurrentGoal
         rememberMergeAccepted context result
         recordMergeGraphSnapshot context goalGraph "merge_accept" result Nothing
         pure (Right ())
+
+-- | Ordered speculation has already invalidated every later epoch whose
+-- observed effects conflict with an earlier writer.  Once the serial commit
+-- cursor reaches a result, applying it is therefore deterministic: the old
+-- generic concurrent merge conflict detector would merely rediscover FUSE
+-- directory metadata effects and incorrectly reject the serial prefix.
+mergeOrderedSpeculativeGoal
+  :: ExperimentContext
+  -> GoalGraph
+  -> FilePath
+  -> Summaries
+  -> AgentRunResult
+  -> IO (Either Text ())
+mergeOrderedSpeculativeGoal context goalGraph baseWorkspace summaries result = do
+  recordMergeGraphSnapshot context goalGraph "merge_before" result Nothing
+  applyGoalWorkspace baseWorkspace result
+  rememberSummary
+    summaries
+    (agentRunResultGoal result)
+    (agentRunResultSummaryForDependents result)
+  rememberMergeAccepted context result
+  recordMergeGraphSnapshot context goalGraph "merge_accept" result Nothing
+  pure (Right ())
 
 recordDagSnapshot
   :: ExperimentContext -> Text -> Maybe Text -> ChaseState -> IO ()
