@@ -9,6 +9,7 @@ module Agent.SeaOfGoals.LLM
   , FileRef (..)
   , AudioRef (..)
   , ArtifactRef (..)
+  , CompactionItem (..)
   , ReasoningItem (..)
   , ImageDetail (..)
   , LLMRole (..)
@@ -88,6 +89,7 @@ data LLMInputItem
   | ToolResultInput ToolResult
   | ArtifactInput ArtifactRef
   | ReasoningInput ReasoningItem
+  | CompactionInput CompactionItem
   deriving stock (Eq, Show, Generic)
 
 instance ToJSON LLMInputItem where
@@ -101,6 +103,8 @@ instance ToJSON LLMInputItem where
     object ["type" .= Aeson.String "artifact", "artifact" .= artifactRef]
   toJSON (ReasoningInput reasoningItem) =
     object ["type" .= Aeson.String "reasoning", "reasoning" .= reasoningItem]
+  toJSON (CompactionInput compactionItem) =
+    object ["type" .= Aeson.String "compaction", "compaction" .= compactionItem]
 
 instance FromJSON LLMInputItem where
   parseJSON =
@@ -112,6 +116,7 @@ instance FromJSON LLMInputItem where
         Aeson.String "tool_result" -> ToolResultInput <$> objectValue .: "tool_result"
         Aeson.String "artifact" -> ArtifactInput <$> objectValue .: "artifact"
         Aeson.String "reasoning" -> ReasoningInput <$> objectValue .: "reasoning"
+        Aeson.String "compaction" -> CompactionInput <$> objectValue .: "compaction"
         Aeson.String _ -> fail "Unknown LLM input item type"
         _ -> fail "LLM input item type must be a string"
 
@@ -220,6 +225,20 @@ instance ToJSON ReasoningItem where
 
 instance FromJSON ReasoningItem where
   parseJSON = genericParseJSON (prefixedOptions "reasoningItem")
+
+{- | Opaque continuation state returned by the Responses compaction endpoint.
+It is intentionally not a textual summary and must be sent back unchanged.
+-}
+data CompactionItem = CompactionItem
+  { compactionItemEncryptedContent :: Text
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON CompactionItem where
+  toJSON = genericToJSON (prefixedOptions "compactionItem")
+
+instance FromJSON CompactionItem where
+  parseJSON = genericParseJSON (prefixedOptions "compactionItem")
 
 data ImageDetail
   = Auto

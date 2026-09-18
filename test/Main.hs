@@ -37,21 +37,34 @@ import Agent.SeaOfGoals.Harness
   , runHarness
   )
 import Agent.SeaOfGoals.LLM
-  ( LLM (..)
+  ( CompactionItem (..)
+  , LLM (..)
   , LLMContentPart (TextPart)
   , LLMError (LLMProviderError)
-  , LLMInputItem (MessageInput, ToolCallInput, ToolResultInput)
+  , LLMInputItem
+    ( CompactionInput
+    , MessageInput
+    , ReasoningInput
+    , ToolCallInput
+    , ToolResultInput
+    )
   , LLMMessage (..)
   , LLMRequest (..)
   , LLMResponse (..)
   , LLMRole (..)
+  , ReasoningItem (..)
   , ResponseFormat (PlainText)
   , ToolCall (..)
   , ToolResult (..)
   )
 import Agent.SeaOfGoals.LLM.Backends.GPT
   ( defaultGPTEndpoint
+  , fromGPTResponseForEndpoint
+  , fromResponsesCompactionResponse
+  , fromResponsesV2CompactionResponse
   , loadGPTEndpointFromEnv
+  , toResponsesCompactionRequest
+  , toResponsesRequest
   )
 import Agent.SeaOfGoals.Scheduling.Agentic
   ( AgentRunResult (..)
@@ -186,6 +199,7 @@ import Data.Aeson
   , eitherDecode
   , encode
   , object
+  , toJSON
   , withObject
   , (.:)
   , (.=)
@@ -228,6 +242,7 @@ main :: IO ()
 main = do
   unicodeTransportResponseBodyTest
   gptEndpointEnvTest
+  responsesCompactionWireTest
   configFileTest
   compilerGraphValidationTest
   compilerPreloadPlannerPromptTest
@@ -377,6 +392,171 @@ gptEndpointEnvTest =
             "explicit chat completions URL wins"
             "https://example.test/custom/chat"
             explicitEndpoint
+
+responsesCompactionWireTest :: IO ()
+responsesCompactionWireTest = do
+  let
+    request = requestTemplate{requestModel = "gpt-5.6"}
+    predecessorHistory =
+      [ MessageInput (LLMMessage User [TextPart "predecessor user item"])
+      , ToolCallInput
+          (ToolCall "call-1" "read" (object ["path" .= ("src/A.hs" :: Text)]))
+      , ToolResultInput (ToolResult "call-1" (Just "read") [TextPart "contents"])
+      , ReasoningInput (ReasoningItem (Just "rsn-1") "opaque-reasoning" (object []))
+      ]
+    compactRequest = toResponsesCompactionRequest request predecessorHistory
+    compactResponse =
+      TransportResponse
+        { transportStatus = 200
+        , transportResponseHeaders = []
+        , transportResponseBody =
+            encode
+              ( object
+                  [ "output"
+                      .= [ object
+                             [ "type" .= ("message" :: Text)
+                             , "role" .= ("user" :: Text)
+                             , "content"
+                                 .= [ object
+                                        [ "type" .= ("input_text" :: Text)
+                                        , "text" .= ("preserved user item" :: Text)
+                                        ]
+                                    ]
+                             ]
+                         , object
+                             [ "type" .= ("compaction" :: Text)
+                             , "encrypted_content" .= ("opaque-continuation" :: Text)
+                             ]
+                         ]
+                  ]
+              )
+        , transportResponseJSON = Nothing
+        }
+  assertEqual
+    "V2 compaction request preserves protocol order and ends with the trigger"
+    ( object
+        [ "model" .= ("gpt-5.6" :: Text)
+        , "input"
+            .= [ object
+                   [ "role" .= ("user" :: Text)
+                   , "content" .= ("predecessor user item" :: Text)
+                   ]
+               , object
+                   [ "type" .= ("function_call" :: Text)
+                   , "call_id" .= ("call-1" :: Text)
+                   , "name" .= ("read" :: Text)
+                   , "arguments" .= ("{\"path\":\"src/A.hs\"}" :: Text)
+                   ]
+               , object
+                   [ "type" .= ("function_call_output" :: Text)
+                   , "call_id" .= ("call-1" :: Text)
+                   , "output" .= ("contents" :: Text)
+                   ]
+               , object
+                   [ "type" .= ("reasoning" :: Text)
+                   , "id" .= ("rsn-1" :: Text)
+                   , "encrypted_content" .= ("opaque-reasoning" :: Text)
+                   , "summary" .= object []
+                   ]
+               , object ["type" .= ("compaction_trigger" :: Text)]
+               ]
+        , "tools" .= ([] :: [Value])
+        , "tool_choice" .= ("auto" :: Text)
+        , "parallel_tool_calls" .= True
+        , "reasoning" .= object []
+        , "store" .= False
+        , "stream" .= True
+        , "include" .= ["reasoning.encrypted_content" :: Text]
+        ]
+    )
+    compactRequest
+  assertEqual
+    "compaction response preserves returned user item and opaque continuation"
+    ( Right
+        [ MessageInput (LLMMessage User [TextPart "preserved user item"])
+        , CompactionInput (CompactionItem "opaque-continuation")
+        ]
+    )
+    (fromResponsesCompactionResponse compactResponse)
+  let v2CompactResponse =
+        compactResponse
+          { transportResponseBody =
+              "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction\",\"encrypted_content\":\"opaque-continuation\"}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-compact\",\"status\":\"completed\"}}\n\ndata: [DONE]\n\n"
+          }
+  assertEqual
+    "V2 compaction retains user items locally and accepts one streamed opaque item"
+    ( Right
+        [ MessageInput (LLMMessage User [TextPart "predecessor user item"])
+        , CompactionInput (CompactionItem "opaque-continuation")
+        ]
+    )
+    (fromResponsesV2CompactionResponse predecessorHistory v2CompactResponse)
+  assertEqual
+    "successor normal Responses request replays the opaque continuation unchanged"
+    ( object
+        [ "model" .= ("gpt-5.6" :: Text)
+        , "input"
+            .= [ object
+                   [ "role" .= ("user" :: Text)
+                   , "content" .= ("successor prompt" :: Text)
+                   ]
+               , object
+                   [ "type" .= ("compaction" :: Text)
+                   , "encrypted_content" .= ("opaque-continuation" :: Text)
+                   ]
+               ]
+        , "include" .= ["reasoning.encrypted_content" :: Text]
+        , "parallel_tool_calls" .= True
+        , "store" .= False
+        ]
+    )
+    ( toResponsesRequest
+        request
+          { requestInput =
+              [ MessageInput (LLMMessage User [TextPart "successor prompt"])
+              , CompactionInput (CompactionItem "opaque-continuation")
+              ]
+          }
+    )
+  let normalResponse =
+        TransportResponse
+          { transportStatus = 200
+          , transportResponseHeaders = []
+          , transportResponseBody =
+              encode
+                ( object
+                    [ "model" .= ("gpt-5.6" :: Text)
+                    , "status" .= ("completed" :: Text)
+                    , "output"
+                        .= [ object
+                               [ "type" .= ("reasoning" :: Text)
+                               , "id" .= ("rsn-2" :: Text)
+                               , "encrypted_content" .= ("opaque-reasoning-2" :: Text)
+                               , "summary" .= ([] :: [Value])
+                               ]
+                           , object
+                               [ "type" .= ("function_call" :: Text)
+                               , "call_id" .= ("call-2" :: Text)
+                               , "name" .= ("read" :: Text)
+                               , "arguments" .= ("{\"path\":\"src/B.hs\"}" :: Text)
+                               ]
+                           ]
+                    ]
+                )
+          , transportResponseJSON = Nothing
+          }
+  assertEqual
+    "Responses output retains reasoning and function-call protocol order for later compaction"
+    ( Right
+        [ ReasoningInput
+            (ReasoningItem (Just "rsn-2") "opaque-reasoning-2" (toJSON ([] :: [Value])))
+        , ToolCallInput
+            (ToolCall "call-2" "read" (object ["path" .= ("src/B.hs" :: Text)]))
+        ]
+    )
+    ( responseOutput
+        <$> fromGPTResponseForEndpoint defaultGPTEndpoint request normalResponse
+    )
 
 configFileTest :: IO ()
 configFileTest = do

@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "experiment": "port-widget",
+  "runner": "harness",
+  "driver": "host",
+  "model": "gpt-5.6",
+  "scheduler": "serial",
+  "workflow": {
+    "enabled": true,
+    "graph": "test-suite/skill-experiments/port-widget/sog.json"
+  },
+  "workspace": {
+    "backend": "copy-tree",
+    "sandbox": "bwrap",
+    "conflictMode": "strict"
+  },
+  "planning": {
+    "incremental": true,
+    "preload": true
+  },
+  "history": {
+    "piHandoff": false,
+    "harnessCompactedHandoff": true
+  },
+  "harness": {
+    "lifecycle": true
+  },
+  "cache": {
+    "key": "sog:port-widget:harness-compacted-history:gpt-5.6",
+    "retention": "24h"
+  },
+  "build": {
+    "fuseSupport": false
+  },
+  "runtimeConfig": "seaofgoals.config.json"
+}

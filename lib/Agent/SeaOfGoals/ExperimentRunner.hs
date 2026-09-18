@@ -48,15 +48,26 @@ import Agent.SeaOfGoals.HistoryHandoff
   , rememberGoalHistory
   )
 import Agent.SeaOfGoals.LLM
-  ( LLMContentPart (TextPart)
-  , LLMInputItem (ToolCallInput, ToolResultInput)
+  ( CompactionItem (..)
+  , LLMContentPart (TextPart)
+  , LLMInputItem
+    ( ArtifactInput
+    , CompactionInput
+    , MessageInput
+    , ReasoningInput
+    , ToolCallInput
+    , ToolResultInput
+    )
+  , LLMMessage (..)
   , LLMRequest (..)
+  , LLMRole (System)
   , ResponseFormat (PlainText)
   , ToolCall (..)
   , ToolResult (..)
   )
 import Agent.SeaOfGoals.LLM.Backends.GPT
   ( GPTBackend (..)
+  , compactGPTHistory
   , loadGPTEndpointFromEnv
   )
 import Agent.SeaOfGoals.PiProcess
@@ -105,6 +116,7 @@ import Agent.SeaOfGoals.Tools
   ( ToolSpec
   , objectToolSpec
   , toolName
+  , toolSpecToOpenAITool
   )
 import Agent.SeaOfGoals.Trace
   ( EffectRecord (..)
@@ -146,8 +158,12 @@ import Agent.SeaOfGoals.Workspace.Sandbox.Bwrap
   )
 import Control.Concurrent.MVar
   ( MVar
+  , modifyMVar
   , modifyMVar_
+  , newEmptyMVar
   , newMVar
+  , putMVar
+  , readMVar
   )
 #ifdef SOG_FUSE
 import Control.Exception
@@ -244,6 +260,8 @@ data ExperimentContext = ExperimentContext
   , experimentWorkflowSpec :: Maybe WorkflowSpec
   , experimentCodexHistoryHandoff :: Bool
   , experimentHarnessHistoryHandoff :: Bool
+  , experimentHarnessCompactedHistoryHandoff :: Bool
+  , experimentCompactedHistoryCache :: CompactedHistoryCache
   , experimentPiHistoryHandoff :: Bool
   , experimentConcurrentWorkspaceMode :: ConcurrentWorkspaceMode
   , experimentConflictMode :: ConflictMode
@@ -266,6 +284,13 @@ data ConcurrentWorkspaceMode
   = CopyTreeWorkspace
   | FuseEventWorkspace
   deriving stock (Eq, Show)
+
+type CompactedHistoryCache =
+  MVar
+    ( Map
+        ByteString.ByteString
+        (MVar (Either Text [LLMInputItem]))
+    )
 
 data AcceptedEffects = AcceptedEffects
   { acceptedEffectsGoal :: GoalNodeId
@@ -340,6 +365,7 @@ loadExperimentContext apiKey prompt = do
   workflowSpec <- loadWorkflowSpecFromEnv
   codexHistoryHandoff <- loadCodexHistoryHandoff
   harnessHistoryHandoff <- loadHarnessHistoryHandoff
+  harnessCompactedHistoryHandoff <- loadHarnessCompactedHistoryHandoff
   piHistoryHandoff <- loadPiHistoryHandoff
   concurrentWorkspaceMode <- loadConcurrentWorkspaceMode
   conflictMode <- loadConflictModeFromEnv
@@ -349,6 +375,7 @@ loadExperimentContext apiKey prompt = do
   harnessLifecycle <- loadHarnessLifecycleMode
   dynamicGoalContextPreloadPlan <- newIORef (GoalContextPreloadPlan Map.empty)
   plannerResolutions <- newIORef Map.empty
+  compactedHistoryCache <- newMVar Map.empty
   createDirectoryIfMissing True controlRoot
   tools <-
     loadExperimentToolsWithControlRoot
@@ -387,7 +414,8 @@ loadExperimentContext apiKey prompt = do
         then experimentSystemPrompt
         else experimentSystemPromptNoLifecycle
     effectiveBaseSystemPrompt =
-      if agentRunner == HarnessAgentRunner && harnessHistoryHandoff
+      if agentRunner == HarnessAgentRunner
+        && (harnessHistoryHandoff || harnessCompactedHistoryHandoff)
         then
           Text.replace
             "When the step is complete, call end_goal with its id, status, and a substantive summary for successor goals. Include prepared plans, exact commands, results, and limitations they need. For an assigned compiled goal, this ends execution immediately."
@@ -422,6 +450,8 @@ loadExperimentContext apiKey prompt = do
       , experimentWorkflowSpec = workflowSpec
       , experimentCodexHistoryHandoff = codexHistoryHandoff
       , experimentHarnessHistoryHandoff = harnessHistoryHandoff
+      , experimentHarnessCompactedHistoryHandoff = harnessCompactedHistoryHandoff
+      , experimentCompactedHistoryCache = compactedHistoryCache
       , experimentPiHistoryHandoff = piHistoryHandoff
       , experimentConcurrentWorkspaceMode = concurrentWorkspaceMode
       , experimentConflictMode = conflictMode
@@ -757,8 +787,6 @@ runSerialGoal context goalGraph summaries histories harnessHistories node = do
     summariesFor summaries (goalPredecessors goalGraph (goalNodeId node))
   predecessorHistories <-
     historiesFor context goalGraph histories (goalNodeId node)
-  predecessorHarnessHistory <-
-    harnessHistoryFor context goalGraph harnessHistories (goalNodeId node)
   let prompt =
         serialGoalPrompt
           (experimentUserPromptText context)
@@ -772,7 +800,9 @@ runSerialGoal context goalGraph summaries histories harnessHistories node = do
       runSerialHarnessGoal context goalGraph summaries harnessHistories node prompt
     CodexAgentRunner ->
       runSerialCodexGoal context summaries histories node prompt
-    PiAgentRunner ->
+    PiAgentRunner -> do
+      predecessorHarnessHistory <-
+        harnessHistoryFor context goalGraph harnessHistories (goalNodeId node)
       runSerialPiGoal context summaries node prompt predecessorHarnessHistory
 
 runSerialPiGoal
@@ -849,6 +879,7 @@ runSerialHarnessGoal context goalGraph summaries harnessHistories node prompt = 
         workspaceContextHistory
           <> handoffHistory
           <> preloadedGoalContextHistory preloaded
+  recordHarnessInitialHistory context node handoffHistory initialSuffix
   state <-
     runHarness
       HarnessConfig
@@ -1146,7 +1177,7 @@ isPlannerGoal = maybe False ((== "G000") . unGoalNodeId)
 historyHandoffReplacesPreload :: ExperimentContext -> Bool
 historyHandoffReplacesPreload context =
   experimentAgentRunner context == HarnessAgentRunner
-    && experimentHarnessHistoryHandoff context
+    && harnessHistoryHandoffEnabled context
 
 emptyPreloadedGoalContext :: PreloadedGoalContext
 emptyPreloadedGoalContext =
@@ -1528,6 +1559,7 @@ runConcurrentHarnessGoal
   preloadHistory
   preloadedReads = do
     let initialSuffix = workspaceContextHistory <> handoffHistory <> preloadHistory
+    recordHarnessInitialHistory context node handoffHistory initialSuffix
     state <-
       runHarness
         HarnessConfig
@@ -2479,8 +2511,118 @@ harnessHistoryFor
   -> GoalNodeId
   -> IO [LLMInputItem]
 harnessHistoryFor context graph histories goalId
-  | not (experimentHarnessHistoryHandoff context) = pure []
-  | otherwise = historiesForGoal graph histories goalId
+  | isPlannerGoal (Just goalId) = pure []
+  | not (harnessHistoryHandoffEnabled context) = pure []
+  | otherwise = do
+      rawHistory <- historiesForGoal graph histories goalId
+      if experimentAgentRunner context == HarnessAgentRunner
+        && experimentHarnessCompactedHistoryHandoff context
+        && not (null rawHistory)
+        then compactHarnessHistory context goalId rawHistory
+        else pure rawHistory
+
+harnessHistoryHandoffEnabled :: ExperimentContext -> Bool
+harnessHistoryHandoffEnabled context =
+  experimentHarnessHistoryHandoff context
+    || experimentHarnessCompactedHistoryHandoff context
+
+compactHarnessHistory
+  :: ExperimentContext -> GoalNodeId -> [LLMInputItem] -> IO [LLMInputItem]
+compactHarnessHistory context successorGoalId rawHistory = do
+  let cacheKey = LazyByteString.toStrict (encode rawHistory)
+  resultCell <- newEmptyMVar
+  cacheEntry <-
+    modifyMVar (experimentCompactedHistoryCache context) $ \cache ->
+      case Map.lookup cacheKey cache of
+        Just cached -> pure (cache, Left cached)
+        Nothing -> pure (Map.insert cacheKey resultCell cache, Right resultCell)
+  (reused, compacted) <-
+    case cacheEntry of
+      Left cached -> do
+        cachedHistory <- readMVar cached
+        pure (True, cachedHistory)
+      Right owned -> do
+        result <- runCompactionRequest context rawHistory
+        putMVar owned result
+        case result of
+          Left _ ->
+            modifyMVar_ (experimentCompactedHistoryCache context) $
+              pure . Map.delete cacheKey
+          Right _ -> pure ()
+        pure (False, result)
+  case compacted of
+    Left err -> fail ("could not compact Harness predecessor history: " <> Text.unpack err)
+    Right compactedHistory -> do
+      recordCompactedHistoryHandoff
+        context
+        successorGoalId
+        rawHistory
+        compactedHistory
+        reused
+      pure compactedHistory
+
+runCompactionRequest
+  :: ExperimentContext -> [LLMInputItem] -> IO (Either Text [LLMInputItem])
+runCompactionRequest context rawHistory = do
+  let compactionRequest =
+        (experimentRequestTemplate context)
+          { requestInput =
+              [ MessageInput
+                  LLMMessage
+                    { messageRole = System
+                    , messageContent = [TextPart (experimentSystemPromptText context)]
+                    }
+              ]
+          , requestTools = fmap toolSpecToOpenAITool (experimentToolsForRun context)
+          }
+  fmap (either (Left . Text.pack . show) Right) $
+    compactGPTHistory
+      (experimentBackend context)
+      compactionRequest
+      rawHistory
+
+recordCompactedHistoryHandoff
+  :: ExperimentContext
+  -> GoalNodeId
+  -> [LLMInputItem]
+  -> [LLMInputItem]
+  -> Bool
+  -> IO ()
+recordCompactedHistoryHandoff context successorGoalId rawHistory compactedHistory reused = do
+  let encryptedChars =
+        sum
+          [ Text.length (compactionItemEncryptedContent item)
+          | CompactionInput item <- compactedHistory
+          ]
+  experimentEventSink context $
+    CompactedHistoryHandoffObserved
+      { eventSuccessorGoalId = unGoalNodeId successorGoalId
+      , eventCompactionInputItems = length rawHistory
+      , eventCompactionOutputItems = length compactedHistory
+      , eventCompactionEncryptedContentChars = encryptedChars
+      , eventCompactionReused = reused
+      }
+
+recordHarnessInitialHistory
+  :: ExperimentContext -> GoalNode -> [LLMInputItem] -> [LLMInputItem] -> IO ()
+recordHarnessInitialHistory context node handoffHistory initialSuffix =
+  when
+    (experimentHarnessCompactedHistoryHandoff context && not (null handoffHistory))
+    ( experimentEventSink
+        context
+        HarnessInitialHistoryObserved
+          { eventInitialHistoryGoalId = unGoalNodeId (goalNodeId node)
+          , eventInitialHistoryItemTypes = fmap llmInputItemType initialSuffix
+          }
+    )
+
+llmInputItemType :: LLMInputItem -> Text
+llmInputItemType (MessageInput _) = "message"
+llmInputItemType (ToolCallInput _) = "tool_call"
+llmInputItemType (ToolResultInput _) = "tool_result"
+llmInputItemType (ArtifactInput _) = "artifact"
+llmInputItemType (ReasoningInput _) = "reasoning"
+llmInputItemType (CompactionInput _) = "compaction"
 
 transitivePredecessorsInSerialOrder :: GoalGraph -> GoalNodeId -> [GoalNodeId]
 transitivePredecessorsInSerialOrder graph goalId =
@@ -2517,6 +2659,18 @@ loadCodexHistoryHandoff = do
 loadHarnessHistoryHandoff :: IO Bool
 loadHarnessHistoryHandoff = do
   maybeValue <- lookupEnv "SOG_HARNESS_HISTORY_HANDOFF"
+  pure
+    ( case fmap Text.toLower (Text.pack <$> maybeValue) of
+        Just "1" -> True
+        Just "true" -> True
+        Just "yes" -> True
+        Just "on" -> True
+        _ -> False
+    )
+
+loadHarnessCompactedHistoryHandoff :: IO Bool
+loadHarnessCompactedHistoryHandoff = do
+  maybeValue <- lookupEnv "SOG_HARNESS_COMPACTED_HISTORY_HANDOFF"
   pure
     ( case fmap Text.toLower (Text.pack <$> maybeValue) of
         Just "1" -> True

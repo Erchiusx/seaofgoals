@@ -21,9 +21,9 @@ def timestamp(value):
 
 
 def is_write(name, arguments):
-    if name in {"write", "edit"}:
+    if name in {"write", "edit", "write_file"}:
         return True
-    if name != "bash":
+    if name not in {"bash", "shell"}:
         return False
     command = str(arguments.get("command", ""))
     command_words = re.sub(r"'(?:[^']*)'|\"(?:\\.|[^\"])*\"", "", command)
@@ -58,6 +58,7 @@ def main():
 
     timestamps = []
     turns = defaultdict(list)
+    goal_walls = {}
     current = {}
     turn_number = 0
     for line in open(args.trace, encoding="utf-8"):
@@ -65,6 +66,51 @@ def main():
         now = timestamp(event["timestamp"])
         timestamps.append(now)
         wrapper = event.get("event", {})
+        harness_kind = wrapper.get("type")
+        if harness_kind == "harness_started":
+            match = re.search(r"^Goal id: ([^\s]+)$", wrapper.get("prompt", ""), re.MULTILINE)
+            if match:
+                goal_walls.setdefault(match.group(1), [now, None])
+            continue
+        if harness_kind == "tool_call":
+            goal = wrapper.get("active_subgoal")
+            name = wrapper.get("tool_name")
+            if not goal or name == "end_goal":
+                continue
+            wall = goal_walls.setdefault(goal, [now, None])
+            active = current.get(goal)
+            start = wall[0]
+            if active and active.get("last_result"):
+                active["end"] = active["last_result"]
+                turns[goal].append(active)
+                start = active["last_result"]
+                active = None
+            if not active:
+                active = {
+                    "number": turn_number + 1,
+                    "start": start,
+                    "calls": [],
+                    "last_result": None,
+                }
+                turn_number += 1
+            active["calls"].append((name, wrapper.get("arguments") or {}))
+            current[goal] = active
+            continue
+        if harness_kind == "tool_result":
+            goal = wrapper.get("active_subgoal")
+            if goal in current:
+                current[goal]["last_result"] = now
+            continue
+        if harness_kind == "subgoal_ended":
+            goal = wrapper.get("subgoal_id")
+            if goal:
+                wall = goal_walls.setdefault(goal, [now, None])
+                wall[1] = now
+                active = current.pop(goal, None)
+                if active and active.get("last_result"):
+                    active["end"] = active["last_result"]
+                    turns[goal].append(active)
+            continue
         if wrapper.get("type") != "codex_event":
             continue
         goal = wrapper.get("goal_id")
@@ -99,11 +145,11 @@ def main():
 
     print(
         "Goal | Read rounds | Read time | Write rounds | Write time | "
-        "Planner rounds | Planner time | Goal time"
+        "Planner rounds | Planner time | Round time | Goal wall time"
     )
     print(
         "-----|--------------|-----------|---------------|------------|"
-        "----------------|--------------|----------"
+        "----------------|--------------|------------|---------------"
     )
     for goal in sorted(turns):
         reads = []
@@ -120,11 +166,18 @@ def main():
                 "control": controls,
             }[round_kind(calls)]
             target.append(duration)
-        goal_time = sum(reads) + sum(writes) + sum(controls)
+        round_time = sum(reads) + sum(writes) + sum(controls)
+        wall = goal_walls.get(goal)
+        goal_wall_time = (
+            (wall[1] - wall[0]).total_seconds()
+            if wall and wall[1]
+            else round_time
+        )
         print(
             f"{goal} | {len(reads)} | {sum(reads):.1f}s | "
             f"{len(writes)} | {sum(writes):.1f}s | "
-            f"{len(controls)} | {sum(controls):.1f}s | {goal_time:.1f}s"
+            f"{len(controls)} | {sum(controls):.1f}s | {round_time:.1f}s | "
+            f"{goal_wall_time:.1f}s"
         )
 
 

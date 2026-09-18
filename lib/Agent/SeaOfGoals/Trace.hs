@@ -47,6 +47,17 @@ data HarnessEvent
       , eventEncryptedContentChars :: Int
       , eventReasoningSummaryItems :: Int
       }
+  | CompactedHistoryHandoffObserved
+      { eventSuccessorGoalId :: Text
+      , eventCompactionInputItems :: Int
+      , eventCompactionOutputItems :: Int
+      , eventCompactionEncryptedContentChars :: Int
+      , eventCompactionReused :: Bool
+      }
+  | HarnessInitialHistoryObserved
+      { eventInitialHistoryGoalId :: Text
+      , eventInitialHistoryItemTypes :: [Text]
+      }
   | ModelUsageObserved
       { eventInputTokens :: Int
       , eventCachedInputTokens :: Maybe Int
@@ -165,6 +176,26 @@ instance ToJSON HarnessEvent where
             , "reasoning_output_tokens" .= reasoningOutputTokens
             , "total_tokens" .= totalTokens
             ]
+      CompactedHistoryHandoffObserved
+        successorGoalId
+        inputItems
+        outputItems
+        encryptedContentChars
+        reused ->
+          base
+            "compacted_history_handoff"
+            [ "successor_goal_id" .= successorGoalId
+            , "compaction_input_items" .= inputItems
+            , "compaction_output_items" .= outputItems
+            , "compaction_encrypted_content_chars" .= encryptedContentChars
+            , "reused" .= reused
+            ]
+      HarnessInitialHistoryObserved goalId itemTypes ->
+        base
+          "harness_initial_history"
+          [ "goal_id" .= goalId
+          , "item_types" .= itemTypes
+          ]
       ModelPhaseObserved phase responseId streamEvent goalId ->
         base
           "model_phase"
@@ -274,6 +305,8 @@ eventType event =
     AssistantMessageObserved{} -> "assistant_message"
     UserMessageObserved{} -> "user_message"
     ReasoningObserved{} -> "reasoning_observed"
+    CompactedHistoryHandoffObserved{} -> "compacted_history_handoff"
+    HarnessInitialHistoryObserved{} -> "harness_initial_history"
     ModelUsageObserved{} -> "model_usage"
     ModelPhaseObserved{} -> "model_phase"
     ToolCallObserved{} -> "tool_call"

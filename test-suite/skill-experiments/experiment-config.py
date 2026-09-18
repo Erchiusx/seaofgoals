@@ -21,6 +21,7 @@ MANAGED_ENV = {
     "SOG_EXPERIMENT_CONFIG",
     "SOG_GRAPH_PATH",
     "SOG_HARNESS_LIFECYCLE",
+    "SOG_HARNESS_COMPACTED_HISTORY_HANDOFF",
     "SOG_INCREMENTAL_PLANNER",
     "SOG_MODEL",
     "SOG_PI_HISTORY_HANDOFF",
@@ -137,8 +138,14 @@ def load_config(path, repo_root):
     preload = boolean(planning.get("preload", False), "planning.preload")
 
     history = config.get("history", {})
-    require_keys(history, {"piHandoff"}, "history")
+    require_keys(history, {"piHandoff", "harnessCompactedHandoff"}, "history")
     pi_handoff = boolean(history.get("piHandoff", False), "history.piHandoff")
+    harness_compacted_handoff = boolean(
+        history.get("harnessCompactedHandoff", False),
+        "history.harnessCompactedHandoff",
+    )
+    if harness_compacted_handoff and runner != "harness":
+        raise ValueError("history.harnessCompactedHandoff requires runner=harness")
 
     harness = config.get("harness", {})
     require_keys(harness, {"lifecycle"}, "harness")
@@ -209,6 +216,7 @@ def load_config(path, repo_root):
         "incremental": incremental,
         "preload": preload,
         "pi_handoff": pi_handoff,
+        "harness_compacted_handoff": harness_compacted_handoff,
         "lifecycle": lifecycle,
         "cache_key": cache_key,
         "cache_retention": cache_retention,
@@ -234,6 +242,9 @@ def build_environment(config):
         "SOG_INCREMENTAL_PLANNER": "1" if config["incremental"] else "0",
         "SOG_PRELOAD_GOAL_CONTEXT": "1" if config["preload"] else "0",
         "SOG_PI_HISTORY_HANDOFF": "1" if config["pi_handoff"] else "0",
+        "SOG_HARNESS_COMPACTED_HISTORY_HANDOFF": (
+            "1" if config["harness_compacted_handoff"] else "0"
+        ),
         "SOG_HARNESS_LIFECYCLE": "1" if config["lifecycle"] else "0",
         "SOG_PROMPT_CACHE_RETENTION": config["cache_retention"],
         "SOG_CONFIG_FILE": str(config["runtime_config"]),

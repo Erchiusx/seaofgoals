@@ -1,0 +1,19 @@
+{
+  "skill": "compacted-history-handoff",
+  "goals": [
+    {
+      "id": "G001",
+      "name": "Create handoff marker",
+      "description": "Write the exact predecessor marker to the workspace.",
+      "predecessors": [],
+      "goal_entering_prompt": "Create handoff-marker.txt containing exactly predecessor-marker-v2 followed by a newline. Verify its contents, then end this goal."
+    },
+    {
+      "id": "G002",
+      "name": "Verify handoff marker",
+      "description": "Read the predecessor marker and write the successor confirmation.",
+      "predecessors": ["G001"],
+      "goal_entering_prompt": "Read handoff-marker.txt. If and only if it contains predecessor-marker-v2, create successor-confirmation.txt containing exactly successor-observed-marker-v2 followed by a newline. Verify it, then end this goal."
+    }
+  ]
+}

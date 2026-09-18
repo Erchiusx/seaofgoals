@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "experiment": "compacted-history-handoff",
+  "runner": "harness",
+  "driver": "host",
+  "model": "gpt-5.6",
+  "scheduler": "serial",
+  "workflow": {
+    "enabled": true,
+    "graph": "test-suite/skill-experiments/compacted-history-handoff/sog.json"
+  },
+  "workspace": {
+    "backend": "copy-tree",
+    "sandbox": "bwrap",
+    "conflictMode": "strict"
+  },
+  "planning": {
+    "incremental": false,
+    "preload": false
+  },
+  "history": {
+    "piHandoff": false,
+    "harnessCompactedHandoff": true
+  },
+  "harness": {
+    "lifecycle": true
+  },
+  "cache": {
+    "key": "sog:compacted-history-handoff:gpt-5.6",
+    "retention": "24h"
+  },
+  "build": {
+    "fuseSupport": false
+  },
+  "runtimeConfig": "seaofgoals.config.json",
+  "skillPath": "test-suite/skill-experiments/compacted-history-handoff/SKILL.md"
+}

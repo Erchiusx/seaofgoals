@@ -50,6 +50,7 @@ class ExperimentConfigTest(unittest.TestCase):
             "incremental": True,
             "preload": True,
             "pi_handoff": False,
+            "harness_compacted_handoff": False,
             "lifecycle": False,
             "cache_key": None,
             "cache_retention": "24h",
@@ -73,6 +74,7 @@ class ExperimentConfigTest(unittest.TestCase):
             values["SOG_BWRAP_MASK_WORKSPACE_PATHS"],
         )
         self.assertEqual("G000,G001", values["SOG_BWRAP_MASK_GOALS"])
+        self.assertEqual("0", values["SOG_HARNESS_COMPACTED_HISTORY_HANDOFF"])
 
 
 if __name__ == "__main__":

@@ -94,15 +94,17 @@ withTransportRequest baseRequest transportRequest =
   baseRequest
     { method = ByteString.pack (transportMethod transportRequest)
     , requestHeaders =
-        encodeHeaders
-          ( ("Content-Type", "application/json")
-              : ("Accept", "application/json")
-              : transportHeaders transportRequest
-          )
+        encodeHeaders (defaultHeaders <> transportHeaders transportRequest)
     , requestBody =
         maybe mempty (RequestBodyLBS . encode) (transportBody transportRequest)
     , responseTimeout = responseTimeoutNone
     }
+ where
+  defaultHeaders =
+    ("Content-Type", "application/json")
+      : [ ("Accept", "application/json")
+        | not (any ((== "Accept") . fst) (transportHeaders transportRequest))
+        ]
 
 encodeHeaders
   :: [(String, String)] -> [(Header.HeaderName, ByteString.ByteString)]

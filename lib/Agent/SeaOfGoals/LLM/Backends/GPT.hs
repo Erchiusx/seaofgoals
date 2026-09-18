@@ -1,7 +1,13 @@
 module Agent.SeaOfGoals.LLM.Backends.GPT
   ( GPTBackend (..)
+  , compactGPTHistory
   , defaultGPTEndpoint
+  , fromResponsesCompactionResponse
+  , fromResponsesV2CompactionResponse
+  , fromGPTResponseForEndpoint
   , loadGPTEndpointFromEnv
+  , toResponsesCompactionRequest
+  , toResponsesRequest
   )
 where
 
@@ -13,6 +19,7 @@ import Agent.LLM.Transport
 import Agent.SeaOfGoals.LLM
   ( ArtifactRef (..)
   , AudioRef (..)
+  , CompactionItem (..)
   , FileRef (..)
   , ImageDetail (..)
   , ImageRef (..)
@@ -47,6 +54,7 @@ import Data.Aeson.KeyMap qualified as AesonKeyMap
 import Data.Aeson.Types
   ( Pair
   , Parser
+  , parseEither
   )
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.ByteString.Lazy.Char8 qualified as LazyByteStringChar8
@@ -107,6 +115,33 @@ instance LLM GPTBackend where
           }
     pure (result >>= fromGPTResponseForEndpoint (gptEndpoint backend) request)
 
+{- | Compact already-produced Responses protocol items through the current
+streaming Responses V2 contract.  The client retains user messages and appends
+the single opaque continuation item returned by the server.
+-}
+compactGPTHistory
+  :: GPTBackend
+  -> LLMRequest
+  -> [LLMInputItem]
+  -> IO (Either LLMError [LLMInputItem])
+compactGPTHistory backend request history
+  | not (isResponsesEndpoint (gptEndpoint backend)) =
+      pure
+        (Left (LLMInvalidRequest "history compaction requires a Responses endpoint"))
+  | otherwise = do
+      result <-
+        sendJSON
+          TransportRequest
+            { transportMethod = "POST"
+            , transportUrl = gptEndpoint backend
+            , transportHeaders =
+                [ ("Authorization", "Bearer " <> gptApiKey backend)
+                , ("Accept", "text/event-stream")
+                ]
+            , transportBody = Just (toResponsesCompactionRequest request history)
+            }
+      pure (result >>= fromResponsesV2CompactionResponse history)
+
 toGPTRequestForEndpoint :: String -> LLMRequest -> Value
 toGPTRequestForEndpoint endpoint request
   | isResponsesEndpoint endpoint = toResponsesRequest request
@@ -145,6 +180,30 @@ toResponsesRequest request =
         ]
     )
 
+toResponsesCompactionRequest :: LLMRequest -> [LLMInputItem] -> Value
+toResponsesCompactionRequest request history =
+  object
+    ( catMaybes
+        [ Just ("model" .= requestModel request)
+        , Just
+            ( "input"
+                .= ( concatMap toResponsesInputItem history
+                       <> [object ["type" .= Aeson.String "compaction_trigger"]]
+                   )
+            )
+        , nonEmptyText "instructions" (systemInstructions request)
+        , Just ("tools" .= fmap chatToolToResponsesTool (requestTools request))
+        , Just ("tool_choice" .= Aeson.String "auto")
+        , Just ("parallel_tool_calls" .= True)
+        , Just ("reasoning" .= object [])
+        , Just ("store" .= False)
+        , Just ("stream" .= True)
+        , Just ("include" .= ["reasoning.encrypted_content" :: Text])
+        , ("prompt_cache_key" .=) <$> requestPromptCacheKey request
+        , ("prompt_cache_retention" .=) <$> requestPromptCacheRetention request
+        ]
+    )
+
 systemInstructions :: LLMRequest -> Text
 systemInstructions request =
   Text.intercalate
@@ -175,6 +234,9 @@ toResponsesInputItem (ArtifactInput artifactRef) =
   ]
 toResponsesInputItem (ReasoningInput reasoningItem) =
   [toResponsesReasoningItem reasoningItem]
+toResponsesInputItem (CompactionInput compactionItem) =
+  [ toResponsesCompactionItem compactionItem
+  ]
 
 toResponsesMessage :: LLMMessage -> Value
 toResponsesMessage message =
@@ -211,6 +273,13 @@ toResponsesReasoningItem reasoningItem =
         ]
     )
 
+toResponsesCompactionItem :: CompactionItem -> Value
+toResponsesCompactionItem compactionItem =
+  object
+    [ "type" .= Aeson.String "compaction"
+    , "encrypted_content" .= compactionItemEncryptedContent compactionItem
+    ]
+
 chatToolToResponsesTool :: Value -> Value
 chatToolToResponsesTool (Aeson.Object toolObject)
   | Just (Aeson.Object functionObject) <- AesonKeyMap.lookup "function" toolObject =
@@ -229,6 +298,7 @@ toGPTInputItem (ToolCallInput toolCall) = [toGPTToolCallMessage toolCall]
 toGPTInputItem (ToolResultInput toolResult) = [toGPTToolResultMessage toolResult]
 toGPTInputItem (ArtifactInput artifactRef) = [toGPTArtifactMessage artifactRef]
 toGPTInputItem (ReasoningInput _) = []
+toGPTInputItem (CompactionInput _) = []
 
 toGPTMessage :: LLMMessage -> Value
 toGPTMessage message =
@@ -361,6 +431,99 @@ fromResponsesResponse request response =
             , responseFinishReason = responsesStatus responsesResponse
             }
 
+fromResponsesCompactionResponse
+  :: TransportResponse -> Either LLMError [LLMInputItem]
+fromResponsesCompactionResponse response =
+  case decode (transportResponseBody response) of
+    Nothing -> Left (LLMProviderError "Could not decode Responses compaction response")
+    Just ResponsesCompactionResponse{responsesCompactionOutput = output} -> do
+      items <-
+        either
+          (Left . LLMProviderError . Text.pack)
+          Right
+          (traverse (parseEither fromResponsesCompactionOutputItem) output)
+      if any isCompactionInput items
+        then Right items
+        else
+          Left
+            ( LLMProviderError
+                "Responses compaction response did not contain a compaction item"
+            )
+
+fromResponsesV2CompactionResponse
+  :: [LLMInputItem] -> TransportResponse -> Either LLMError [LLMInputItem]
+fromResponsesV2CompactionResponse history response = do
+  events <-
+    traverse decodeSseEvent (sseDataLines (transportResponseBody response))
+  let
+    compactionItems = catMaybes (fmap outputCompactionItem events)
+    completed = any isResponseCompleted events
+  if not completed
+    then
+      Left
+        ( LLMProviderError
+            "Responses V2 compaction stream ended before response.completed"
+        )
+    else case compactionItems of
+      [compactionValue] -> do
+        compaction <-
+          either
+            (Left . LLMProviderError . Text.pack)
+            Right
+            (parseEither fromResponsesCompactionOutputItem compactionValue)
+        case compaction of
+          CompactionInput _ -> Right (retainedUserMessages history <> [compaction])
+          _ ->
+            Left
+              (LLMProviderError "Responses V2 compaction output was not a compaction item")
+      _ ->
+        Left
+          ( LLMProviderError
+              ( "Responses V2 compaction expected exactly one compaction output item, got "
+                  <> Text.pack (show (length compactionItems))
+              )
+          )
+
+sseDataLines :: LazyByteString.ByteString -> [Text]
+sseDataLines body =
+  [ Text.drop (Text.length "data: ") line
+  | line <- Text.lines (TextEncoding.decodeUtf8 (LazyByteString.toStrict body))
+  , "data: " `Text.isPrefixOf` line
+  , Text.drop (Text.length "data: ") line /= "[DONE]"
+  ]
+
+decodeSseEvent :: Text -> Either LLMError Value
+decodeSseEvent line =
+  case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 line) of
+    Left err ->
+      Left
+        (LLMProviderError ("Could not decode Responses SSE event: " <> Text.pack err))
+    Right value -> Right value
+
+outputCompactionItem :: Value -> Maybe Value
+outputCompactionItem (Aeson.Object event)
+  | Just (Aeson.String "response.output_item.done") <-
+      AesonKeyMap.lookup "type" event
+  , Just item@(Aeson.Object itemObject) <- AesonKeyMap.lookup "item" event
+  , Just (Aeson.String "compaction") <- AesonKeyMap.lookup "type" itemObject =
+      Just item
+outputCompactionItem _ = Nothing
+
+isResponseCompleted :: Value -> Bool
+isResponseCompleted (Aeson.Object event) =
+  AesonKeyMap.lookup "type" event == Just (Aeson.String "response.completed")
+isResponseCompleted _ = False
+
+retainedUserMessages :: [LLMInputItem] -> [LLMInputItem]
+retainedUserMessages = filter isUserMessage
+ where
+  isUserMessage (MessageInput LLMMessage{messageRole = User}) = True
+  isUserMessage _ = False
+
+isCompactionInput :: LLMInputItem -> Bool
+isCompactionInput CompactionInput{} = True
+isCompactionInput _ = False
+
 responseItems :: Text -> [ToolCall] -> [LLMInputItem]
 responseItems content toolCalls
   | Text.null content && not (null toolCalls) = []
@@ -370,16 +533,15 @@ responseItems content toolCalls
       ]
 
 responseItemsWithReasoning :: Text -> [ResponsesOutputItem] -> [LLMInputItem]
-responseItemsWithReasoning content outputItems =
-  [ ReasoningInput reasoningItem
-  | ResponsesReasoningItem reasoningItem <- outputItems
-  ]
-    <> if Text.null content
-      then []
-      else
-        [ MessageInput
-            LLMMessage{messageRole = Assistant, messageContent = [TextPart content]}
-        ]
+responseItemsWithReasoning _content = concatMap responseOutputItem
+
+responseOutputItem :: ResponsesOutputItem -> [LLMInputItem]
+responseOutputItem (ResponsesReasoningItem reasoningItem) = [ReasoningInput reasoningItem]
+responseOutputItem (ResponsesFunctionCallItem toolCall) = [ToolCallInput toolCall]
+responseOutputItem (ResponsesMessageItem content)
+  | Text.null content = []
+  | otherwise = [MessageInput (LLMMessage Assistant [TextPart content])]
+responseOutputItem ResponsesIgnoredItem = []
 
 data GPTResponse = GPTResponse
   { gptResponseModel :: Maybe Text
@@ -410,6 +572,49 @@ instance FromJSON ResponsesResponse where
         <*> objectValue .:? "status"
         <*> objectValue .:? "output" .!= []
         <*> objectValue .:? "usage"
+
+newtype ResponsesCompactionResponse = ResponsesCompactionResponse
+  { responsesCompactionOutput :: [Value]
+  }
+
+instance FromJSON ResponsesCompactionResponse where
+  parseJSON =
+    withObject "ResponsesCompactionResponse" $ \objectValue ->
+      ResponsesCompactionResponse <$> objectValue .:? "output" .!= []
+
+fromResponsesCompactionOutputItem :: Value -> Parser LLMInputItem
+fromResponsesCompactionOutputItem =
+  withObject "ResponsesCompactionOutputItem" $ \objectValue -> do
+    itemType <- objectValue .: "type"
+    case itemType of
+      Aeson.String "compaction" ->
+        CompactionInput . CompactionItem <$> objectValue .: "encrypted_content"
+      Aeson.String "message" -> do
+        role <- parseResponsesRole =<< objectValue .: "role"
+        if role /= User
+          then fail "Responses compaction response may only retain user message items"
+          else pure ()
+        content <- parseResponsesMessageContent objectValue
+        pure (MessageInput (LLMMessage role [TextPart content]))
+      Aeson.String _ -> fail "unsupported item in Responses compaction response"
+      _ -> fail "Responses compaction output item type must be a string"
+
+parseResponsesRole :: Text -> Parser LLMRole
+parseResponsesRole "system" = pure System
+parseResponsesRole "user" = pure User
+parseResponsesRole "assistant" = pure Assistant
+parseResponsesRole "tool" = pure Tool
+parseResponsesRole _ = fail "unknown Responses message role"
+
+parseResponsesMessageContent :: Aeson.Object -> Parser Text
+parseResponsesMessageContent objectValue = do
+  contentValue <- objectValue .:? "content" .!= Aeson.Null
+  case contentValue of
+    Aeson.String text -> pure text
+    Aeson.Array items ->
+      Text.intercalate "\n" <$> traverse parseResponsesContentPartText (toList items)
+    Aeson.Null -> pure ""
+    _ -> fail "Responses compaction message content must be a string or array"
 
 data ResponsesOutputItem
   = ResponsesMessageItem Text
@@ -457,6 +662,7 @@ parseResponsesContentPartText =
     partType <- objectValue .:? "type" .!= Aeson.String "output_text"
     case partType of
       Aeson.String "output_text" -> objectValue .: "text"
+      Aeson.String "input_text" -> objectValue .: "text"
       Aeson.String "text" -> objectValue .: "text"
       Aeson.String "refusal" -> objectValue .:? "refusal" .!= ""
       Aeson.String _ -> pure ""

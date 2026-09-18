@@ -1,0 +1,1 @@
+Run the compacted-history handoff smoke workflow in the current workspace.
