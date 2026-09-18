@@ -10,10 +10,10 @@
     },
     {
       "id": "G002",
-      "name": "Implement the JavaScript connector and colorMenu widget",
-      "description": "Create the missing InstantSearch.js connector, its widget wrapper, and their public exports.",
+      "name": "Implement the JavaScript colorMenu widget",
+      "description": "Create the InstantSearch.js widget wrapper and its two public exports without altering the connector.",
       "predecessors": [],
-      "goal_entering_prompt": "Implement only the InstantSearch.js layer for the requested color-menu port in /workspace. Read close connector and widget precedents as needed, then create `packages/instantsearch.js/src/connectors/color-menu/connectColorMenu.ts` and export it from `packages/instantsearch.js/src/connectors/index.ts` and `packages/instantsearch.js/src/connectors/index.umd.ts`. Create `packages/instantsearch.js/src/widgets/color-menu/color-menu.tsx`, backed by `connectColorMenu`, with `$$widgetType` `ais.colorMenu`. Export `colorMenu` only from `packages/instantsearch.js/src/widgets/index.ts` and `packages/instantsearch.js/src/widgets/index.umd.ts`. Do not modify any React, Vue, test, script, or unrelated file. Do not run audits, tests, builds, type checks, or the checker; do not reread merely to validate your edits."
+      "goal_entering_prompt": "Implement only the JavaScript layer for the requested color-menu port in /workspace. Keep the existing connector `packages/instantsearch.js/src/connectors/color-menu/connectColorMenu.ts` unchanged. Read close widget precedents as needed, then create `packages/instantsearch.js/src/widgets/color-menu/color-menu.tsx`, backed by `connectColorMenu`, with `$$widgetType` `ais.colorMenu`. Export `colorMenu` only from `packages/instantsearch.js/src/widgets/index.ts` and `packages/instantsearch.js/src/widgets/index.umd.ts`. Do not modify any React, Vue, test, connector, script, or unrelated file. Do not run audits, tests, builds, type checks, or the checker; do not reread merely to validate your edits."
     },
     {
       "id": "G003",
