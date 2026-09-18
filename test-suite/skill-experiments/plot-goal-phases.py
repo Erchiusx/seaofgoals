@@ -142,10 +142,11 @@ def phases(path):
     return result
 
 
-def render(data, output):
+def render(data, output, duration=None):
     start = min(item[1] for items in data.values() for item in items)
     finish = max(item[2] for items in data.values() for item in items)
-    total = max((finish - start).total_seconds(), 0.001)
+    observed_total = (finish - start).total_seconds()
+    total = max(observed_total, duration or 0, 0.001)
     left, width, row = 150, 1800, 38
     goals = sorted(data)
     height = 48 + row * len(goals) + 78
@@ -213,8 +214,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("trace")
     parser.add_argument("--out", required=True)
+    parser.add_argument(
+        "--duration",
+        type=float,
+        help="fixed x-axis duration in seconds; defaults to the trace duration",
+    )
     args = parser.parse_args()
-    render(phases(args.trace), args.out)
+    render(phases(args.trace), args.out, args.duration)
     print(f"wrote {args.out}")
 
 

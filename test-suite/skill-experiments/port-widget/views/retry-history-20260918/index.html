@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>port-widget retry-history phase comparison</title>
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; background: #f3f5f7; color: #202428; font: 14px/1.4 system-ui, sans-serif; letter-spacing: 0; }
+header { position: sticky; top: 0; z-index: 2; padding: 20px 24px; background: #fff; border-bottom: 1px solid #d9dee5; }
+h1 { margin: 0; font-size: 21px; }
+p { margin: 4px 0 0; color: #66707b; }
+main { padding: 18px; }
+section { margin-bottom: 24px; border: 1px solid #d9dee5; background: #fff; }
+h2 { margin: 0; padding: 12px 14px; font-size: 16px; border-bottom: 1px solid #d9dee5; }
+.sample { border-bottom: 1px solid #d9dee5; }
+.sample:last-child { border-bottom: 0; }
+.sample > div { display: flex; align-items: center; gap: 16px; min-height: 42px; padding: 0 14px; border-bottom: 1px solid #e5e8ec; }
+.strategy { min-width: 210px; font-weight: 650; }
+.wall { color: #66707b; }
+a { margin-left: auto; color: #1769aa; }
+iframe { display: block; width: 100%; height: 370px; border: 0; }
+@media (max-width: 680px) { header { padding: 16px; } main { padding: 10px; } .sample > div { gap: 8px; flex-wrap: wrap; padding: 8px 10px; } .strategy { min-width: 0; } a { margin-left: 0; } iframe { height: 320px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>port-widget: retry-history phase comparison</h1>
+  <p>All rows start at their own first observed phase and share the same 0-197.5s x-axis. Hover a bar for its phase, interval, and duration. Baseline is one Pi process, shown as Pi rather than a post-hoc goal mapping.</p>
+</header>
+<main>
+  <section>
+    <h2>Repeat 1</h2>
+    <div class="sample"><div><span class="strategy">Direct baseline</span><span class="wall">105.7s wall</span><a href="phases/baseline-r1.html">open</a></div><iframe src="phases/baseline-r1.html" title="Repeat 1 direct baseline phases"></iframe></div>
+    <div class="sample"><div><span class="strategy">Speculative clean history</span><span class="wall">153.8s wall</span><a href="phases/clean-r1.html">open</a></div><iframe src="phases/clean-r1.html" title="Repeat 1 clean history phases"></iframe></div>
+    <div class="sample"><div><span class="strategy">Speculative read-prefix history</span><span class="wall">143.4s wall</span><a href="phases/read-prefix-r1.html">open</a></div><iframe src="phases/read-prefix-r1.html" title="Repeat 1 read-prefix history phases"></iframe></div>
+  </section>
+  <section>
+    <h2>Repeat 2</h2>
+    <div class="sample"><div><span class="strategy">Direct baseline</span><span class="wall">139.9s wall</span><a href="phases/baseline-r2.html">open</a></div><iframe src="phases/baseline-r2.html" title="Repeat 2 direct baseline phases"></iframe></div>
+    <div class="sample"><div><span class="strategy">Speculative clean history</span><span class="wall">180.4s wall</span><a href="phases/clean-r2.html">open</a></div><iframe src="phases/clean-r2.html" title="Repeat 2 clean history phases"></iframe></div>
+    <div class="sample"><div><span class="strategy">Speculative read-prefix history</span><span class="wall">197.5s wall</span><a href="phases/read-prefix-r2.html">open</a></div><iframe src="phases/read-prefix-r2.html" title="Repeat 2 read-prefix history phases"></iframe></div>
+  </section>
+  <section>
+    <h2>Repeat 3</h2>
+    <div class="sample"><div><span class="strategy">Direct baseline</span><span class="wall">116.3s wall</span><a href="phases/baseline-r3.html">open</a></div><iframe src="phases/baseline-r3.html" title="Repeat 3 direct baseline phases"></iframe></div>
+    <div class="sample"><div><span class="strategy">Speculative clean history</span><span class="wall">175.7s wall</span><a href="phases/clean-r3.html">open</a></div><iframe src="phases/clean-r3.html" title="Repeat 3 clean history phases"></iframe></div>
+    <div class="sample"><div><span class="strategy">Speculative read-prefix history</span><span class="wall">186.3s wall</span><a href="phases/read-prefix-r3.html">open</a></div><iframe src="phases/read-prefix-r3.html" title="Repeat 3 read-prefix history phases"></iframe></div>
+  </section>
+</main>
+</body>
+</html>

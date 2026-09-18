@@ -146,8 +146,17 @@ if [ "$SOG_EXPERIMENT_DRIVER" = "host" ]; then
   export SOG_TRACE_PATH="$control_dir/sog-trace.jsonl"
   export SOG_CODEX_HOME="${SOG_CODEX_HOME_HOST}"
   cd "$workspace_dir"
-  "$SOG_EXECUTABLE" "$(<"$experiment_dir/prompt.txt")"
-  exit 0
+  # The trace intentionally captures structured harness events, but an
+  # exception in the host scheduler is printed by the executable itself.
+  # Persist that foreground output beside the trace so an interrupted
+  # speculative epoch has a diagnosable terminal record.
+  runner_status=0
+  "$SOG_EXECUTABLE" "$(<"$experiment_dir/prompt.txt")" \
+    > >(tee "$control_dir/runner.stdout.log") \
+    2> >(tee "$control_dir/runner.stderr.log" >&2) \
+    || runner_status=$?
+  printf '%s\n' "$runner_status" > "$control_dir/runner.exit-status"
+  exit "$runner_status"
 fi
 
 cd "$experiment_dir"

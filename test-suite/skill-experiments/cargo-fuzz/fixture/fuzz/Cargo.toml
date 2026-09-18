@@ -1,0 +1,33 @@
+[package]
+name = "sog-cargo-fuzz-fixture-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+sog-cargo-fuzz-fixture = { path = ".." }
+
+[[bin]]
+name = "decode-frame"
+path = "fuzz_targets/decode_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "normalize-segments"
+path = "fuzz_targets/normalize_segments.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode-runs"
+path = "fuzz_targets/decode_runs.rs"
+test = false
+doc = false
+bench = false
